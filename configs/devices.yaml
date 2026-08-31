@@ -1,0 +1,24 @@
+devices:
+  - id: ETCHER-01
+    name: Etcher #1
+    profile: profiles/demo/etcher-x100.yaml
+    driver: simulator
+    autoConnect: true
+    connection:
+      protocol: hsms-ss
+      mode: active
+      host: 127.0.0.1
+      port: 5001
+      sessionId: 0
+
+  - id: ETCHER-02
+    name: Etcher #2
+    profile: profiles/demo/etcher-x100.yaml
+    driver: simulator
+    autoConnect: true
+    connection:
+      protocol: hsms-ss
+      mode: active
+      host: 127.0.0.1
+      port: 5002
+      sessionId: 0

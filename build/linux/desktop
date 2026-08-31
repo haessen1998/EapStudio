@@ -1,0 +1,13 @@
+[Desktop Entry]
+Version=1.0
+Name=EapStudio
+Comment=AI-powered SECS/GEM Equipment Integration Studio
+# The Exec line includes %u to pass the URL to the application
+Exec=/usr/local/bin/eapstudio.exe %u
+Terminal=false
+Type=Application
+Icon=eapstudio.exe
+Categories=Utility;
+StartupWMClass=eapstudio.exe
+
+ 

@@ -1,0 +1,7 @@
+automations:
+  - name: send_recipe_on_material_arrival
+    trigger: material.arrived
+    command: send.recipe
+    parameters:
+      materialId: materialId
+      recipeId: recipeId

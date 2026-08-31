@@ -1,0 +1,20 @@
+routes:
+  - name: production-events
+    match:
+      names:
+        - wafer.started
+        - material.arrived
+        - recipe.sent
+        - recipe.failed
+        - alarm.raised
+        - alarm.cleared
+    sinks:
+      - mock-mq
+      - sqlite-history
+
+  - name: unknown-secs-events
+    match:
+      names:
+        - secs.unknown
+    sinks:
+      - sqlite-history

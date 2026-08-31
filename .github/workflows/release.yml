@@ -1,0 +1,135 @@
+name: Desktop Release
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: eapstudio-release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  WAILS_VERSION: v3.0.0-beta.9
+
+jobs:
+  windows:
+    name: Build Windows x64
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Resolve and validate version
+        id: version
+        shell: pwsh
+        run: |
+          $inInfo = $false
+          $version = $null
+          foreach ($line in Get-Content "build/config.yml") {
+            if ($line -match '^info:\s*$') { $inInfo = $true; continue }
+            if ($inInfo -and $line -match '^\S') { break }
+            if ($inInfo -and $line -match '^\s+version:\s*["''](?<version>[^"'']+)') { $version = $Matches.version; break }
+          }
+          if (-not $version) { throw "Unable to read info.version from build/config.yml" }
+          if ("${{ github.ref_type }}" -eq "tag" -and "${{ github.ref_name }}".TrimStart("v") -ne $version) { throw "Tag does not match build version $version" }
+          "version=$version" >> $env:GITHUB_OUTPUT
+      - name: Install tools and dependencies
+        shell: pwsh
+        run: |
+          go install github.com/wailsapp/wails/v3/cmd/wails3@$env:WAILS_VERSION
+          npm ci --prefix frontend
+      - name: Test
+        run: |
+          go test ./...
+          npm run build --prefix frontend
+      - name: Build and archive
+        shell: pwsh
+        run: |
+          wails3 build GOOS=windows ARCH=amd64
+          $name = "EapStudio-${{ steps.version.outputs.version }}-windows-x64"
+          New-Item -ItemType Directory -Path "bin\$name" | Out-Null
+          Copy-Item -LiteralPath "bin\eapstudio.exe" -Destination "bin\$name\EapStudio.exe"
+          Compress-Archive -Path "bin\$name" -DestinationPath "bin\$name.zip"
+          (Get-FileHash "bin\$name.zip" -Algorithm SHA256).Hash.ToLower() + "  $name.zip" | Set-Content "bin\$name.zip.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: EapStudio-${{ steps.version.outputs.version }}-windows-x64
+          path: |
+            bin/EapStudio-${{ steps.version.outputs.version }}-windows-x64.zip
+            bin/EapStudio-${{ steps.version.outputs.version }}-windows-x64.zip.sha256
+          if-no-files-found: error
+
+  macos:
+    name: Build macOS universal
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Resolve and validate version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(awk '/^info:/{inside=1; next} inside && /^[^[:space:]]/{exit} inside && /^[[:space:]]+version:/{gsub(/["'\''[:space:]]/, "", $2); print $2; exit}' build/config.yml)"
+          test -n "$version"
+          if [[ "$GITHUB_REF_TYPE" == "tag" && "${GITHUB_REF_NAME#v}" != "$version" ]]; then exit 1; fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Install tools and dependencies
+        run: |
+          go install github.com/wailsapp/wails/v3/cmd/wails3@"$WAILS_VERSION"
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+          npm ci --prefix frontend
+      - name: Test
+        run: |
+          go test ./...
+          npm run build --prefix frontend
+      - name: Build and archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          wails3 task darwin:package:universal
+          name="EapStudio-${{ steps.version.outputs.version }}-macos-universal"
+          ditto -c -k --sequesterRsrc --keepParent bin/eapstudio.app "bin/$name.zip"
+          (cd bin && shasum -a 256 "$name.zip" > "$name.zip.sha256")
+      - uses: actions/upload-artifact@v4
+        with:
+          name: EapStudio-${{ steps.version.outputs.version }}-macos-universal
+          path: |
+            bin/EapStudio-${{ steps.version.outputs.version }}-macos-universal.zip
+            bin/EapStudio-${{ steps.version.outputs.version }}-macos-universal.zip.sha256
+          if-no-files-found: error
+
+  publish:
+    name: Publish GitHub Release
+    if: github.ref_type == 'tag'
+    needs: [windows, macos]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+      - name: Create release and upload artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${{ github.ref_name }}" release-assets/* --verify-tag --generate-notes --title "EapStudio ${{ github.ref_name }}"

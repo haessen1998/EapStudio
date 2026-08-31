@@ -1,0 +1,15 @@
+{
+	"fixed": {
+		"file_version": "0.1.0"
+	},
+	"info": {
+		"0000": {
+			"ProductVersion": "0.1.0",
+			"CompanyName": "EapStudio",
+			"FileDescription": "AI-powered SECS/GEM Equipment Integration Studio",
+			"LegalCopyright": "© 2026 EapStudio",
+			"ProductName": "EapStudio",
+			"Comments": "This is a comment"
+		}
+	}
+}
