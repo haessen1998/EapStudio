@@ -604,6 +604,7 @@ function App() {
               size="icon"
               onClick={refresh}
               aria-label="Refresh"
+              title="Reload Router/Automation rules and refresh the runtime snapshot"
             >
               <RefreshCw className="size-4" />
             </Button>
@@ -2157,6 +2158,7 @@ function SettingsPage({
   const [configComparison, setConfigComparison] =
     useState<ConfigComparison | null>(null);
   const [configStatus, setConfigStatus] = useState("");
+  const [restartRequired, setRestartRequired] = useState(false);
   const [retentionDays, setRetentionDays] = useState(() => {
     const value = Number(
       localStorage.getItem("eapstudio.historyRetentionDays"),
@@ -2324,6 +2326,7 @@ function SettingsPage({
       setEquipmentStatus(
         result.restartRequired ? "Saved · restart required" : "Saved",
       );
+      setRestartRequired((current) => current || result.restartRequired);
     } catch (reason) {
       setEquipmentStatus(`Save failed · ${String(reason)}`);
     }
@@ -2341,6 +2344,7 @@ function SettingsPage({
           ? `Added ${result.added.join(", ")} · restart required`
           : "Runtime already contains every packaged demo",
       );
+      if (result.added?.length) setRestartRequired(true);
     } catch (reason) {
       setConfigStatus(`Merge failed · ${String(reason)}`);
     }
@@ -2437,8 +2441,9 @@ function SettingsPage({
             </div>
             <p>
               API Keys are sent to the Go backend for this process only and are
-              never written to localStorage. <code>EAPSTUDIO_AI_API_KEY</code>{" "}
-              remains the fallback.
+              cleared when EapStudio exits or restarts. They are never written
+              to localStorage. <code>EAPSTUDIO_AI_API_KEY</code> remains the
+              persistent environment fallback.
             </p>
           </CardContent>
         </Card>
@@ -2473,6 +2478,18 @@ function SettingsPage({
               Merge missing packaged demos
             </Button>
             {configStatus && <p>{configStatus}</p>}
+            {restartRequired && (
+              <div className="config-restart-notice">
+                <RefreshCw className="size-4" />
+                <div>
+                  <b>Restart EapStudio to apply equipment changes</b>
+                  <p>
+                    The current DeviceManager keeps its existing runtimes until
+                    the next application start.
+                  </p>
+                </div>
+              </div>
+            )}
             <p className="config-path">
               {configComparison?.runtimePath || equipmentPath}
             </p>
@@ -2637,6 +2654,19 @@ function SettingsPage({
                   </>
                 )}
                 <div className="ai-save-row">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={defaultAIID === selectedAI.id}
+                    onClick={() => {
+                      setDefaultAIID(selectedAI.id);
+                      setSaved(false);
+                    }}
+                  >
+                    {defaultAIID === selectedAI.id
+                      ? "Current default"
+                      : "Set as default"}
+                  </Button>
                   <Button size="sm" onClick={saveAI}>
                     Save list and default
                   </Button>

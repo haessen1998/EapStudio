@@ -12,7 +12,9 @@ var adapterRegistry = struct {
 	sync.RWMutex
 	factories map[string]AdapterFactory
 }{factories: map[string]AdapterFactory{
-	"generic-gem": func() Adapter { return GenericGemAdapter{} },
+	"generic-gem":    func() Adapter { return GenericGemAdapter{} },
+	"demo-aoi-v200":  func() Adapter { return DemoAOIV200Adapter{} },
+	"demo-oven-t300": func() Adapter { return DemoOvenT300Adapter{} },
 }}
 
 // RegisterAdapter is the extension point for model- or vendor-specific adapters.

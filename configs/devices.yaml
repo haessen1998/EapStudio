@@ -31,7 +31,7 @@ devices:
     badge: AOI
     name: AOI Inspection #1
     profile: profiles/demo/aoi-v200.yaml
-    adapter: generic-gem
+    adapter: demo-aoi-v200
     driver: simulator
     autoConnect: true
     connection:
@@ -45,7 +45,7 @@ devices:
     badge: OVN
     name: Thermal Oven #1
     profile: profiles/demo/oven-t300.yaml
-    adapter: generic-gem
+    adapter: demo-oven-t300
     driver: simulator
     autoConnect: true
     connection:

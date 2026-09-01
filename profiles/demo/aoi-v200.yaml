@@ -5,7 +5,7 @@ metadata:
   vendor: EapStudio Demo
   model: AOI-V200
   version: 1.0.0
-  adapter: generic-gem
+  adapter: demo-aoi-v200
 spec:
   variables:
     201: { name: MaterialId, type: A, description: Incoming wafer material }
@@ -13,7 +13,7 @@ spec:
     203: { name: PortId, type: A, description: Load port }
     301: { name: WaferId, type: A, description: Inspected wafer }
     302: { name: DefectCount, type: U4, description: Detected defect count }
-    303: { name: Result, type: A, description: Inspection result }
+    303: { name: ResultCode, type: U1, description: "Vendor result code: 0 pass, 1 review, 2 fail" }
   reports:
     2101: { name: MaterialArrival, variables: [201, 202, 203] }
     3001: { name: InspectionResult, variables: [301, 302, 303] }
@@ -33,7 +33,7 @@ spec:
       mapping:
         waferId: { report: 3001, variable: 301 }
         defectCount: { report: 3001, variable: 302 }
-        result: { report: 3001, variable: 303 }
+        resultCode: { report: 3001, variable: 303 }
   commands:
     send.recipe:
       displayName: Select inspection recipe

@@ -1046,6 +1046,28 @@ tbody tr:hover {
   color: var(--muted-foreground);
   font-size: 10px;
 }
+.config-restart-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  border: 1px solid color-mix(in srgb, #e6ad42 42%, var(--border));
+  border-radius: 8px;
+  padding: 10px;
+  color: #e6ad42;
+  background: color-mix(in srgb, #e6ad42 7%, var(--card));
+}
+.config-restart-notice svg {
+  flex: 0 0 auto;
+  margin-top: 1px;
+}
+.config-restart-notice b {
+  display: block;
+  color: var(--foreground);
+  font-size: 10px;
+}
+.config-restart-notice p {
+  margin-top: 3px;
+}
 .history-stats {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

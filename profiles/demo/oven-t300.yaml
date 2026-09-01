@@ -5,7 +5,7 @@ metadata:
   vendor: EapStudio Demo
   model: OVEN-T300
   version: 1.0.0
-  adapter: generic-gem
+  adapter: demo-oven-t300
 spec:
   variables:
     201: { name: MaterialId, type: A, description: Carrier identifier }
@@ -13,7 +13,7 @@ spec:
     203: { name: PortId, type: A, description: Load port }
     401: { name: BatchId, type: A, description: Thermal batch }
     402: { name: Recipe, type: A, description: Running recipe }
-    403: { name: Temperature, type: F8, description: Chamber temperature }
+    403: { name: TemperatureDeciC, type: I4, description: Vendor temperature in 0.1 degrees Celsius }
   reports:
     2101: { name: MaterialArrival, variables: [201, 202, 203] }
     4001: { name: BatchState, variables: [401, 402, 403] }
@@ -33,7 +33,7 @@ spec:
       mapping:
         batchId: { report: 4001, variable: 401 }
         recipe: { report: 4001, variable: 402 }
-        temperature: { report: 4001, variable: 403 }
+        temperatureDeciC: { report: 4001, variable: 403 }
     4002:
       name: temperature.deviated
       displayName: Temperature deviated
@@ -41,7 +41,7 @@ spec:
       mapping:
         batchId: { report: 4001, variable: 401 }
         recipe: { report: 4001, variable: 402 }
-        temperature: { report: 4001, variable: 403 }
+        temperatureDeciC: { report: 4001, variable: 403 }
   commands:
     send.recipe:
       displayName: Download thermal recipe
@@ -70,8 +70,8 @@ spec:
       batch-started:
         displayName: Batch started
         event: batch.started
-        data: { batchId: "BATCH-${sequence}", recipe: BAKE-420, temperature: 420.0 }
+        data: { batchId: "BATCH-${sequence}", recipe: BAKE-420, temperatureC: 420.0 }
       temperature-deviation:
         displayName: Temperature deviation
         event: temperature.deviated
-        data: { batchId: "BATCH-${sequence}", recipe: BAKE-420, temperature: 438.5 }
+        data: { batchId: "BATCH-${sequence}", recipe: BAKE-420, temperatureC: 438.5 }
