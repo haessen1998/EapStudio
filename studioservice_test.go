@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -10,6 +11,49 @@ import (
 	"eapstudio/internal/ai"
 	"eapstudio/internal/device"
 )
+
+func TestCompareAndMergePackagedEquipmentConfig(t *testing.T) {
+	source := os.DirFS(".")
+	packaged, err := device.LoadConfig(source, "configs/devices.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(packaged.Devices) < 3 {
+		t.Fatalf("packaged demos = %d", len(packaged.Devices))
+	}
+	runtimeConfig := device.Config{Devices: append([]device.Definition(nil), packaged.Devices[:2]...)}
+	configPath := filepath.Join(t.TempDir(), "devices.yaml")
+	if err := device.SaveConfig(configPath, runtimeConfig); err != nil {
+		t.Fatal(err)
+	}
+	service, err := newStudioServiceWithConfig(source, filepath.Join(t.TempDir(), "history.db"), runtimeConfig, configPath, source, "configs/routes.yaml", "configs/automations.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer service.close()
+
+	comparison, err := service.CompareEquipmentConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if comparison.RuntimeCount != 2 || comparison.PackagedCount != len(packaged.Devices) || len(comparison.Missing) != len(packaged.Devices)-2 {
+		t.Fatalf("comparison = %#v", comparison)
+	}
+	merged, err := service.MergePackagedDemoDevices()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(merged.Added) != len(packaged.Devices)-2 || !merged.RestartRequired {
+		t.Fatalf("merge = %#v", merged)
+	}
+	saved, err := device.LoadConfig(os.DirFS(filepath.Dir(configPath)), filepath.Base(configPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(saved.Devices) != len(packaged.Devices) {
+		t.Fatalf("saved devices = %d, want %d", len(saved.Devices), len(packaged.Devices))
+	}
+}
 
 func snapshotDevice(t *testing.T, service *StudioService, id string) device.Snapshot {
 	t.Helper()

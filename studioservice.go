@@ -8,6 +8,8 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"reflect"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -22,6 +24,7 @@ import (
 )
 
 type StudioService struct {
+	packagedSource       fs.FS
 	manager              *device.Manager
 	router               *router.Router
 	config               device.Config
@@ -113,7 +116,7 @@ func newStudioServiceWithConfig(source fs.FS, databasePath string, config device
 		_ = history.Close()
 		return nil, err
 	}
-	service := &StudioService{router: routes, config: config, automation: engine, store: history, updates: make(chan struct{}, 1), aiConfig: ai.Config{Provider: "local"}, equipmentConfigPath: configPath, ruleSource: ruleSource, routeConfigPath: routePath, automationConfigPath: automationPath, pending: map[string]AIActionPermission{}}
+	service := &StudioService{packagedSource: source, router: routes, config: config, automation: engine, store: history, updates: make(chan struct{}, 1), aiConfig: ai.Config{Provider: "local"}, equipmentConfigPath: configPath, ruleSource: ruleSource, routeConfigPath: routePath, automationConfigPath: automationPath, pending: map[string]AIActionPermission{}}
 	manager, err := device.NewManager(source, config, routes, engine, history, service.notify)
 	if err != nil {
 		_ = history.Close()
@@ -235,6 +238,113 @@ func (s *StudioService) SaveEquipmentConfig(config device.Config) (EquipmentConf
 		return EquipmentConfigSaveResult{}, err
 	}
 	return EquipmentConfigSaveResult{Path: s.equipmentConfigPath, RestartRequired: true}, nil
+}
+
+type EquipmentConfigComparison struct {
+	RuntimePath   string   `json:"runtimePath"`
+	PackagedCount int      `json:"packagedCount"`
+	RuntimeCount  int      `json:"runtimeCount"`
+	Missing       []string `json:"missing"`
+	Extra         []string `json:"extra"`
+	Changed       []string `json:"changed"`
+}
+
+type EquipmentMergeResult struct {
+	Added           []string `json:"added"`
+	Path            string   `json:"path"`
+	RestartRequired bool     `json:"restartRequired"`
+}
+
+func (s *StudioService) CompareEquipmentConfig() (EquipmentConfigComparison, error) {
+	packaged, err := device.LoadConfig(s.packagedSource, "configs/devices.yaml")
+	if err != nil {
+		return EquipmentConfigComparison{}, err
+	}
+	runtimeConfig, err := s.runtimeEquipmentConfig()
+	if err != nil {
+		return EquipmentConfigComparison{}, err
+	}
+	packagedByID, runtimeByID := map[string]device.Definition{}, map[string]device.Definition{}
+	for _, value := range packaged.Devices {
+		packagedByID[value.ID] = value
+	}
+	for _, value := range runtimeConfig.Devices {
+		runtimeByID[value.ID] = value
+	}
+	result := EquipmentConfigComparison{RuntimePath: s.equipmentConfigPath, PackagedCount: len(packaged.Devices), RuntimeCount: len(runtimeConfig.Devices)}
+	for id, value := range packagedByID {
+		runtimeValue, ok := runtimeByID[id]
+		if !ok {
+			result.Missing = append(result.Missing, id)
+		} else if !reflect.DeepEqual(value, runtimeValue) {
+			result.Changed = append(result.Changed, id)
+		}
+	}
+	for id := range runtimeByID {
+		if _, ok := packagedByID[id]; !ok {
+			result.Extra = append(result.Extra, id)
+		}
+	}
+	sort.Strings(result.Missing)
+	sort.Strings(result.Extra)
+	sort.Strings(result.Changed)
+	return result, nil
+}
+
+func (s *StudioService) MergePackagedDemoDevices() (EquipmentMergeResult, error) {
+	packaged, err := device.LoadConfig(s.packagedSource, "configs/devices.yaml")
+	if err != nil {
+		return EquipmentMergeResult{}, err
+	}
+	runtimeConfig, err := s.runtimeEquipmentConfig()
+	if err != nil {
+		return EquipmentMergeResult{}, err
+	}
+	existing := map[string]bool{}
+	for _, value := range runtimeConfig.Devices {
+		existing[value.ID] = true
+	}
+	result := EquipmentMergeResult{Path: s.equipmentConfigPath, RestartRequired: true}
+	for _, value := range packaged.Devices {
+		if !existing[value.ID] {
+			runtimeConfig.Devices = append(runtimeConfig.Devices, value)
+			result.Added = append(result.Added, value.ID)
+		}
+	}
+	if len(result.Added) > 0 {
+		if err := device.SaveConfig(s.equipmentConfigPath, runtimeConfig); err != nil {
+			return EquipmentMergeResult{}, err
+		}
+	}
+	return result, nil
+}
+
+func (s *StudioService) runtimeEquipmentConfig() (device.Config, error) {
+	if s.equipmentConfigPath == "" {
+		return s.config, nil
+	}
+	data, err := os.ReadFile(s.equipmentConfigPath)
+	if err != nil {
+		return device.Config{}, err
+	}
+	return device.DecodeConfig(data)
+}
+
+func (s *StudioService) QueryTraceHistory(query sqlitestore.HistoryQuery) (sqlitestore.TracePage, error) {
+	return s.store.QueryTraces(context.Background(), query)
+}
+func (s *StudioService) QueryEventHistory(query sqlitestore.HistoryQuery) (sqlitestore.EventPage, error) {
+	return s.store.QueryEvents(context.Background(), query)
+}
+func (s *StudioService) QueryCommandHistory(query sqlitestore.HistoryQuery) (sqlitestore.CommandPage, error) {
+	return s.store.QueryCommands(context.Background(), query)
+}
+func (s *StudioService) ApplyHistoryRetention(days int) (sqlitestore.RetentionResult, error) {
+	result, err := s.store.ApplyRetention(context.Background(), days)
+	if err == nil {
+		s.notify()
+	}
+	return result, err
 }
 
 type RuleReloadResult struct {

@@ -3,5 +3,10 @@
 
 export type {
     Alarm,
-    Stats
+    CommandPage,
+    EventPage,
+    HistoryQuery,
+    RetentionResult,
+    Stats,
+    TracePage
 } from "./models.js";

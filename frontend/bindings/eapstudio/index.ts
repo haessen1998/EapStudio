@@ -9,7 +9,9 @@ export {
 export type {
     AIActionPermission,
     CopilotReply,
+    EquipmentConfigComparison,
     EquipmentConfigSaveResult,
+    EquipmentMergeResult,
     RuleReloadResult,
     StudioSnapshot
 } from "./models.js";

@@ -34,7 +34,22 @@ export interface CopilotReply {
     "permission"?: AIActionPermission | null;
 }
 
+export interface EquipmentConfigComparison {
+    "runtimePath": string;
+    "packagedCount": number;
+    "runtimeCount": number;
+    "missing": string[] | null;
+    "extra": string[] | null;
+    "changed": string[] | null;
+}
+
 export interface EquipmentConfigSaveResult {
+    "path": string;
+    "restartRequired": boolean;
+}
+
+export interface EquipmentMergeResult {
+    "added": string[] | null;
     "path": string;
     "restartRequired": boolean;
 }

@@ -19,6 +19,7 @@ import (
 
 type Store struct {
 	db      *sql.DB
+	path    string
 	traceCh chan driver.Message
 	dropped atomic.Uint64
 	close   sync.Once
@@ -38,11 +39,12 @@ type Alarm struct {
 }
 
 type Stats struct {
-	TraceCount   int64  `json:"traceCount"`
-	EventCount   int64  `json:"eventCount"`
-	CommandCount int64  `json:"commandCount"`
-	AlarmCount   int64  `json:"alarmCount"`
-	DroppedTrace uint64 `json:"droppedTrace"`
+	TraceCount    int64  `json:"traceCount"`
+	EventCount    int64  `json:"eventCount"`
+	CommandCount  int64  `json:"commandCount"`
+	AlarmCount    int64  `json:"alarmCount"`
+	DroppedTrace  uint64 `json:"droppedTrace"`
+	DatabaseBytes int64  `json:"databaseBytes"`
 }
 
 func Open(path string) (*Store, error) {
@@ -54,7 +56,7 @@ func Open(path string) (*Store, error) {
 		return nil, err
 	}
 	db.SetMaxOpenConns(1)
-	store := &Store{db: db, traceCh: make(chan driver.Message, 2048), done: make(chan struct{})}
+	store := &Store{db: db, path: path, traceCh: make(chan driver.Message, 2048), done: make(chan struct{})}
 	if err := store.migrate(); err != nil {
 		_ = db.Close()
 		return nil, err
@@ -139,6 +141,9 @@ func (s *Store) Stats(ctx context.Context) Stats {
 	_ = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM domain_events`).Scan(&stats.EventCount)
 	_ = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM commands`).Scan(&stats.CommandCount)
 	_ = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM alarms`).Scan(&stats.AlarmCount)
+	if info, err := os.Stat(s.path); err == nil {
+		stats.DatabaseBytes = info.Size()
+	}
 	return stats
 }
 

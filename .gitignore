@@ -4,6 +4,7 @@
 *.db
 *.db-shm
 *.db-wal
+wails_*.syso
 bin
 frontend/dist
 frontend/node_modules

@@ -11,6 +11,9 @@ import * as ai$0 from "./internal/ai/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
 import * as device$0 from "./internal/device/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
+import * as sqlite$0 from "./internal/store/sqlite/models.js";
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
@@ -20,12 +23,20 @@ export function AIConfig(): $CancellablePromise<ai$0.Config> {
     return $Call.ByID(1418556419);
 }
 
+export function ApplyHistoryRetention(days: number): $CancellablePromise<sqlite$0.RetentionResult> {
+    return $Call.ByID(2964914099, days);
+}
+
 /**
  * AskCopilot is a grounded, deterministic first-pass assistant. A provider-backed
  * implementation can replace it without moving credentials into the frontend.
  */
 export function AskCopilot(question: string, equipmentID: string, attachments: ai$0.Attachment[] | null): $CancellablePromise<$models.CopilotReply> {
     return $Call.ByID(1361152184, question, equipmentID, attachments);
+}
+
+export function CompareEquipmentConfig(): $CancellablePromise<$models.EquipmentConfigComparison> {
+    return $Call.ByID(3856062616);
 }
 
 export function ConfigureAI(config: ai$0.Config, apiKey: string): $CancellablePromise<void> {
@@ -46,6 +57,22 @@ export function EmitSimulatorScenario(id: string, scenario: string): $Cancellabl
 
 export function EquipmentConfigPath(): $CancellablePromise<string> {
     return $Call.ByID(1315334092);
+}
+
+export function MergePackagedDemoDevices(): $CancellablePromise<$models.EquipmentMergeResult> {
+    return $Call.ByID(956824401);
+}
+
+export function QueryCommandHistory(query: sqlite$0.HistoryQuery): $CancellablePromise<sqlite$0.CommandPage> {
+    return $Call.ByID(2864890778, query);
+}
+
+export function QueryEventHistory(query: sqlite$0.HistoryQuery): $CancellablePromise<sqlite$0.EventPage> {
+    return $Call.ByID(723671001, query);
+}
+
+export function QueryTraceHistory(query: sqlite$0.HistoryQuery): $CancellablePromise<sqlite$0.TracePage> {
+    return $Call.ByID(1853524174, query);
 }
 
 export function ReloadRules(): $CancellablePromise<$models.RuleReloadResult> {
