@@ -2,11 +2,16 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io/fs"
+	"os"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
+	"eapstudio/internal/ai"
 	"eapstudio/internal/automation"
 	"eapstudio/internal/device"
 	"eapstudio/internal/router"
@@ -15,12 +20,16 @@ import (
 )
 
 type StudioService struct {
-	manager    *device.Manager
-	router     *router.Router
-	config     device.Config
-	automation *automation.Engine
-	store      *sqlitestore.Store
-	updates    chan struct{}
+	manager            *device.Manager
+	router             *router.Router
+	config             device.Config
+	automation         *automation.Engine
+	store              *sqlitestore.Store
+	updates            chan struct{}
+	aiMu               sync.RWMutex
+	aiConfig           ai.Config
+	pending            map[string]AIActionPermission
+	permissionSequence atomic.Uint64
 }
 
 type StudioSnapshot struct {
@@ -34,9 +43,20 @@ type StudioSnapshot struct {
 }
 
 type CopilotReply struct {
-	Answer      string   `json:"answer"`
-	Evidence    []string `json:"evidence"`
-	Suggestions []string `json:"suggestions"`
+	Answer      string              `json:"answer"`
+	Evidence    []string            `json:"evidence"`
+	Suggestions []string            `json:"suggestions"`
+	Permission  *AIActionPermission `json:"permission,omitempty"`
+}
+
+type AIActionPermission struct {
+	ID          string         `json:"id"`
+	Tool        string         `json:"tool"`
+	EquipmentID string         `json:"equipmentId"`
+	Command     string         `json:"command"`
+	Summary     string         `json:"summary"`
+	Risk        string         `json:"risk"`
+	Parameters  map[string]any `json:"parameters"`
 }
 
 func NewStudioService(source fs.FS) (*StudioService, error) {
@@ -67,7 +87,7 @@ func newStudioService(source fs.FS, databasePath string) (*StudioService, error)
 		_ = history.Close()
 		return nil, err
 	}
-	service := &StudioService{router: routes, config: config, automation: engine, store: history, updates: make(chan struct{}, 1)}
+	service := &StudioService{router: routes, config: config, automation: engine, store: history, updates: make(chan struct{}, 1), aiConfig: ai.Config{Provider: "local"}, pending: map[string]AIActionPermission{}}
 	manager, err := device.NewManager(source, config, routes, engine, history, service.notify)
 	if err != nil {
 		_ = history.Close()
@@ -103,6 +123,24 @@ func (s *StudioService) EmitSimulatorScenario(id string, scenario string) error 
 	return s.manager.EmitScenario(id, scenario)
 }
 
+func (s *StudioService) AIConfig() ai.Config {
+	s.aiMu.RLock()
+	defer s.aiMu.RUnlock()
+	return s.aiConfig
+}
+
+func (s *StudioService) ConfigureAI(config ai.Config) error {
+	switch config.Provider {
+	case "local", "responses", "chat":
+	default:
+		return fmt.Errorf("unsupported AI provider %q", config.Provider)
+	}
+	s.aiMu.Lock()
+	s.aiConfig = config
+	s.aiMu.Unlock()
+	return nil
+}
+
 // AskCopilot is a grounded, deterministic first-pass assistant. A provider-backed
 // implementation can replace it without moving credentials into the frontend.
 func (s *StudioService) AskCopilot(question string, equipmentID string) CopilotReply {
@@ -119,6 +157,32 @@ func (s *StudioService) AskCopilot(question string, equipmentID string) CopilotR
 	}
 	if selected == nil {
 		return CopilotReply{Answer: "当前没有已配置的设备。"}
+	}
+	if commandIntent(question) {
+		permission := s.newCommandPermission(*selected)
+		return CopilotReply{
+			Answer:   fmt.Sprintf("我已准备 %s，但它会向 %s 发送设备命令，需要你在下方权限卡中明确授权。", permission.Command, permission.EquipmentID),
+			Evidence: []string{"目标设备 " + permission.EquipmentID, "Profile command " + permission.Command}, Permission: &permission,
+		}
+	}
+
+	config := s.AIConfig()
+	if config.Provider != "local" {
+		provider, err := ai.NewProvider(config, os.Getenv("EAPSTUDIO_AI_API_KEY"))
+		if err != nil {
+			return CopilotReply{Answer: "AI provider 配置错误：" + err.Error()}
+		}
+		contextJSON, _ := json.Marshal(selected)
+		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Second)
+		defer cancel()
+		answer, err := provider.Complete(ctx, ai.Request{
+			System: "You are EapStudio Equipment Copilot. Answer using only the supplied runtime snapshot. Never claim a command was sent and never bypass UI permission approval.",
+			Prompt: question + "\n\nRuntime snapshot:\n" + string(contextJSON),
+		})
+		if err != nil {
+			return CopilotReply{Answer: "AI provider 调用失败：" + err.Error(), Evidence: []string{config.Provider + " adapter"}}
+		}
+		return CopilotReply{Answer: answer, Evidence: []string{config.Provider + " adapter", "设备 Runtime 快照"}}
 	}
 
 	latestMessage := "暂无消息"
@@ -158,4 +222,51 @@ func (s *StudioService) AskCopilot(question string, equipmentID string) CopilotR
 		answer += " CEID 1001 在当前 Profile 中定义为 wafer.started；material.arrived 会通过 Automation 生成 send.recipe Command。"
 	}
 	return CopilotReply{Answer: answer, Evidence: []string{"设备 Runtime 快照", "demo-etcher-x100 Profile", "最近消息与事件环形记录"}, Suggestions: []string{"解释最近一条 S6F11", "检查事件路由结果", "为未知 CEID 生成 Profile 草案"}}
+}
+
+func commandIntent(question string) bool {
+	lower := strings.ToLower(question)
+	return strings.Contains(question, "发送命令") || strings.Contains(question, "下发命令") || strings.Contains(question, "发送配方") || strings.Contains(question, "执行命令") || strings.Contains(lower, "send command") || strings.Contains(lower, "execute command")
+}
+
+func (s *StudioService) newCommandPermission(selected device.Snapshot) AIActionPermission {
+	parameters := map[string]any{"recipeId": "ETCH-A", "materialId": "AI-REQUEST"}
+	for index := len(selected.Events) - 1; index >= 0; index-- {
+		if selected.Events[index].Name != "material.arrived" {
+			continue
+		}
+		for _, key := range []string{"recipeId", "materialId"} {
+			if value, ok := selected.Events[index].Data[key]; ok {
+				parameters[key] = value
+			}
+		}
+		break
+	}
+	id := fmt.Sprintf("permission-%06d", s.permissionSequence.Add(1))
+	permission := AIActionPermission{ID: id, Tool: "send.command", EquipmentID: selected.ID, Command: "send.recipe", Summary: "Send recipe parameters to equipment", Risk: "This writes to a live equipment session and may change equipment state.", Parameters: parameters}
+	s.aiMu.Lock()
+	s.pending[id] = permission
+	s.aiMu.Unlock()
+	return permission
+}
+
+func (s *StudioService) ResolveAIAction(permissionID string, allow bool) CopilotReply {
+	s.aiMu.Lock()
+	permission, ok := s.pending[permissionID]
+	if ok {
+		delete(s.pending, permissionID)
+	}
+	s.aiMu.Unlock()
+	if !ok {
+		return CopilotReply{Answer: "该权限请求不存在或已经处理。"}
+	}
+	if !allow {
+		return CopilotReply{Answer: fmt.Sprintf("已拒绝 %s；没有向 %s 发送任何消息。", permission.Command, permission.EquipmentID), Evidence: []string{"permission denied"}}
+	}
+	correlationID := "ai-" + permission.ID
+	value, err := s.manager.SubmitCommand(permission.EquipmentID, permission.Command, permission.Parameters, correlationID, permission.ID)
+	if err != nil {
+		return CopilotReply{Answer: "命令执行失败：" + err.Error(), Evidence: []string{"permission allowed", "command rejected before send"}}
+	}
+	return CopilotReply{Answer: fmt.Sprintf("已授权并提交 %s，commandId=%s。执行结果会以 recipe.sent 或 recipe.failed Event 返回。", value.Name, value.ID), Evidence: []string{"permission allowed", "command queue " + permission.EquipmentID}}
 }

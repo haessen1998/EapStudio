@@ -145,6 +145,25 @@ func (r *Runtime) EmitScenario(name string) error {
 	return err
 }
 
+func (r *Runtime) SubmitCommand(name string, parameters map[string]any, correlationID, causationID string) (command.Command, error) {
+	if _, ok := r.profile.Spec.Commands[name]; !ok {
+		return command.Command{}, fmt.Errorf("profile %s has no command %q", r.profile.Metadata.Name, name)
+	}
+	sequence := r.simSeq.Add(1)
+	value := command.Command{
+		ID: fmt.Sprintf("cmd-ai-%s-%06d", r.definition.ID, sequence), Type: domain.TypeCommand, Name: name,
+		EquipmentID: r.definition.ID, CorrelationID: correlationID, CausationID: causationID,
+		Status: command.StatusPending, CreatedAt: time.Now(), Parameters: parameters,
+	}
+	r.upsertCommand(value)
+	select {
+	case r.commands <- value:
+		return value, nil
+	default:
+		return command.Command{}, fmt.Errorf("command queue is full")
+	}
+}
+
 func (r *Runtime) receive(message driver.Message) {
 	message.EquipmentID = r.definition.ID
 	message.Direction = driver.DirectionIn

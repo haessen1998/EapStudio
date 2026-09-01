@@ -17,10 +17,21 @@ import * as sink$0 from "./internal/sink/models.js";
 // @ts-ignore: Unused imports
 import * as sqlite$0 from "./internal/store/sqlite/models.js";
 
+export interface AIActionPermission {
+    "id": string;
+    "tool": string;
+    "equipmentId": string;
+    "command": string;
+    "summary": string;
+    "risk": string;
+    "parameters": { [_ in string]?: any } | null;
+}
+
 export interface CopilotReply {
     "answer": string;
     "evidence": string[] | null;
     "suggestions": string[] | null;
+    "permission"?: AIActionPermission | null;
 }
 
 export interface StudioSnapshot {

@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	"eapstudio/internal/automation"
+	"eapstudio/internal/command"
 	driver "eapstudio/internal/driver/secs"
 	"eapstudio/internal/equipment"
 	"eapstudio/internal/profile"
@@ -70,6 +71,13 @@ func (m *Manager) EmitScenario(id, scenario string) error {
 		return err
 	}
 	return runtime.EmitScenario(scenario)
+}
+func (m *Manager) SubmitCommand(id, name string, parameters map[string]any, correlationID, causationID string) (command.Command, error) {
+	runtime, err := m.runtime(id)
+	if err != nil {
+		return command.Command{}, err
+	}
+	return runtime.SubmitCommand(name, parameters, correlationID, causationID)
 }
 func (m *Manager) ConnectAuto(ctx context.Context, config Config) {
 	for _, definition := range config.Devices {

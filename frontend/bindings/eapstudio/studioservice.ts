@@ -7,7 +7,15 @@ import { Call as $Call, CancellablePromise as $CancellablePromise } from "@wails
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
+import * as ai$0 from "./internal/ai/models.js";
+
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
 import * as $models from "./models.js";
+
+export function AIConfig(): $CancellablePromise<ai$0.Config> {
+    return $Call.ByID(1418556419);
+}
 
 /**
  * AskCopilot is a grounded, deterministic first-pass assistant. A provider-backed
@@ -15,6 +23,10 @@ import * as $models from "./models.js";
  */
 export function AskCopilot(question: string, equipmentID: string): $CancellablePromise<$models.CopilotReply> {
     return $Call.ByID(1361152184, question, equipmentID);
+}
+
+export function ConfigureAI(config: ai$0.Config): $CancellablePromise<void> {
+    return $Call.ByID(3253751891, config);
 }
 
 export function ConnectDevice(id: string): $CancellablePromise<void> {
@@ -27,6 +39,10 @@ export function DisconnectDevice(id: string): $CancellablePromise<void> {
 
 export function EmitSimulatorScenario(id: string, scenario: string): $CancellablePromise<void> {
     return $Call.ByID(3108572356, id, scenario);
+}
+
+export function ResolveAIAction(permissionID: string, allow: boolean): $CancellablePromise<$models.CopilotReply> {
+    return $Call.ByID(1547149465, permissionID, allow);
 }
 
 export function Snapshot(): $CancellablePromise<$models.StudioSnapshot> {
