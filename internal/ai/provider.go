@@ -55,7 +55,7 @@ func (a httpAdapter) post(ctx context.Context, path string, payload any, target 
 		return fmt.Errorf("AI model is required")
 	}
 	if strings.TrimSpace(a.apiKey) == "" {
-		return fmt.Errorf("EAPSTUDIO_AI_API_KEY is not configured")
+		return fmt.Errorf("AI API key is not configured")
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {

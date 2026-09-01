@@ -58,14 +58,20 @@ type SimulatorScenario struct {
 
 type Snapshot struct {
 	ID          string                 `json:"id"`
+	Badge       string                 `json:"badge"`
 	Name        string                 `json:"name"`
 	Profile     string                 `json:"profile"`
 	ProfileName string                 `json:"profileName"`
 	Vendor      string                 `json:"vendor"`
 	Model       string                 `json:"model"`
 	Driver      string                 `json:"driver"`
+	Adapter     string                 `json:"adapter"`
+	AutoConnect bool                   `json:"autoConnect"`
+	Protocol    string                 `json:"protocol"`
+	Mode        string                 `json:"mode"`
 	Host        string                 `json:"host"`
 	Port        int                    `json:"port"`
+	SessionID   uint16                 `json:"sessionId"`
 	State       driver.ConnectionState `json:"state"`
 	StateDetail string                 `json:"stateDetail"`
 	Messages    []driver.Message       `json:"messages"`
@@ -426,5 +432,5 @@ func (r *Runtime) Snapshot() Snapshot {
 		scenario := r.profile.Spec.Simulator.Scenarios[name]
 		scenarios = append(scenarios, SimulatorScenario{ID: name, DisplayName: scenario.DisplayName, Event: scenario.Event, Direction: scenario.Direction, Stream: scenario.Message.Stream, Function: scenario.Message.Function})
 	}
-	return Snapshot{ID: r.definition.ID, Name: r.definition.Name, Profile: r.definition.Profile, ProfileName: r.profile.Metadata.Name, Vendor: r.profile.Metadata.Vendor, Model: r.profile.Metadata.Model, Driver: r.definition.Driver, Host: r.definition.Connection.Host, Port: r.definition.Connection.Port, State: r.state, StateDetail: r.detail, Messages: messages, Events: events, Commands: commands, Scenarios: scenarios}
+	return Snapshot{ID: r.definition.ID, Badge: r.definition.Badge, Name: r.definition.Name, Profile: r.definition.Profile, ProfileName: r.profile.Metadata.Name, Vendor: r.profile.Metadata.Vendor, Model: r.profile.Metadata.Model, Driver: r.definition.Driver, Adapter: r.adapter.Name(), AutoConnect: r.definition.AutoConnect, Protocol: r.definition.Connection.Protocol, Mode: r.definition.Connection.Mode, Host: r.definition.Connection.Host, Port: r.definition.Connection.Port, SessionID: r.definition.Connection.SessionID, State: r.state, StateDetail: r.detail, Messages: messages, Events: events, Commands: commands, Scenarios: scenarios}
 }

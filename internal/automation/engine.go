@@ -3,6 +3,7 @@ package automation
 import (
 	"fmt"
 	"io/fs"
+	pathpkg "path"
 	"strings"
 	"time"
 
@@ -19,6 +20,7 @@ type Config struct {
 type Rule struct {
 	Name       string            `yaml:"name" json:"name"`
 	Trigger    string            `yaml:"trigger" json:"trigger"`
+	Equipment  []string          `yaml:"equipment,omitempty" json:"equipment,omitempty"`
 	Command    string            `yaml:"command" json:"command"`
 	Parameters map[string]string `yaml:"parameters" json:"parameters"`
 }
@@ -42,8 +44,17 @@ func Load(source fs.FS, path string) (*Engine, error) {
 		if rule.Name == "" {
 			return nil, fmt.Errorf("automation name is required")
 		}
-		if err := domain.ValidateName(domain.TypeEvent, rule.Trigger); err != nil {
+		if hasGlob(rule.Trigger) {
+			if _, err := pathpkg.Match(rule.Trigger, ""); err != nil {
+				return nil, fmt.Errorf("automation %q trigger pattern: %w", rule.Name, err)
+			}
+		} else if err := domain.ValidateName(domain.TypeEvent, rule.Trigger); err != nil {
 			return nil, fmt.Errorf("automation %q trigger: %w", rule.Name, err)
+		}
+		for _, pattern := range rule.Equipment {
+			if _, err := pathpkg.Match(pattern, ""); err != nil {
+				return nil, fmt.Errorf("automation %q equipment pattern %q: %w", rule.Name, pattern, err)
+			}
 		}
 		if err := domain.ValidateName(domain.TypeCommand, rule.Command); err != nil {
 			return nil, fmt.Errorf("automation %q command: %w", rule.Name, err)
@@ -58,7 +69,8 @@ func (e *Engine) Handle(value event.Event) []command.Command {
 	}
 	var commands []command.Command
 	for _, rule := range e.rules {
-		if rule.Trigger != value.Name {
+		triggered, _ := pathpkg.Match(rule.Trigger, value.Name)
+		if !triggered || !matchesEquipment(rule.Equipment, value.EquipmentID) {
 			continue
 		}
 		parameters := make(map[string]any, len(rule.Parameters))
@@ -77,6 +89,21 @@ func (e *Engine) Handle(value event.Event) []command.Command {
 		})
 	}
 	return commands
+}
+
+func hasGlob(value string) bool { return strings.ContainsAny(value, "*?[") }
+
+func matchesEquipment(patterns []string, equipmentID string) bool {
+	if len(patterns) == 0 {
+		return true
+	}
+	for _, pattern := range patterns {
+		matched, _ := pathpkg.Match(pattern, equipmentID)
+		if matched {
+			return true
+		}
+	}
+	return false
 }
 
 func (e *Engine) Rules() []Rule {

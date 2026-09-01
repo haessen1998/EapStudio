@@ -46,7 +46,11 @@ func NewManager(source fs.FS, config Config, routes *router.Router, engine *auto
 		default:
 			return nil, fmt.Errorf("unknown driver %q", definition.Driver)
 		}
-		manager.runtimes[definition.ID] = NewRuntime(definition, compiled, protocol, equipment.GenericGemAdapter{}, routes, engine, recorder, onChange)
+		adapter, err := equipment.NewAdapter(definition.Adapter)
+		if err != nil {
+			return nil, fmt.Errorf("create adapter for %s: %w", definition.ID, err)
+		}
+		manager.runtimes[definition.ID] = NewRuntime(definition, compiled, protocol, adapter, routes, engine, recorder, onChange)
 	}
 	return manager, nil
 }

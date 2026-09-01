@@ -34,6 +34,11 @@ export interface CopilotReply {
     "permission"?: AIActionPermission | null;
 }
 
+export interface EquipmentConfigSaveResult {
+    "path": string;
+    "restartRequired": boolean;
+}
+
 export interface StudioSnapshot {
     "devices": device$0.Snapshot[] | null;
     "routes": router$0.Rule[] | null;

@@ -11,6 +11,29 @@ import * as secs$0 from "../driver/secs/models.js";
 // @ts-ignore: Unused imports
 import * as event$0 from "../event/models.js";
 
+export interface Config {
+    "devices": Definition[] | null;
+}
+
+export interface ConnectionConfig {
+    "protocol": string;
+    "mode": string;
+    "host": string;
+    "port": number;
+    "sessionId": number;
+}
+
+export interface Definition {
+    "id": string;
+    "badge": string;
+    "name": string;
+    "profile": string;
+    "adapter": string;
+    "driver": string;
+    "autoConnect": boolean;
+    "connection": ConnectionConfig;
+}
+
 export interface SimulatorScenario {
     "id": string;
     "displayName": string;
@@ -22,14 +45,20 @@ export interface SimulatorScenario {
 
 export interface Snapshot {
     "id": string;
+    "badge": string;
     "name": string;
     "profile": string;
     "profileName": string;
     "vendor": string;
     "model": string;
     "driver": string;
+    "adapter": string;
+    "autoConnect": boolean;
+    "protocol": string;
+    "mode": string;
     "host": string;
     "port": number;
+    "sessionId": number;
     "state": secs$0.ConnectionState;
     "stateDetail": string;
     "messages": secs$0.Message[] | null;

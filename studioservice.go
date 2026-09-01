@@ -20,16 +20,18 @@ import (
 )
 
 type StudioService struct {
-	manager            *device.Manager
-	router             *router.Router
-	config             device.Config
-	automation         *automation.Engine
-	store              *sqlitestore.Store
-	updates            chan struct{}
-	aiMu               sync.RWMutex
-	aiConfig           ai.Config
-	pending            map[string]AIActionPermission
-	permissionSequence atomic.Uint64
+	manager             *device.Manager
+	router              *router.Router
+	config              device.Config
+	automation          *automation.Engine
+	store               *sqlitestore.Store
+	updates             chan struct{}
+	aiMu                sync.RWMutex
+	aiConfig            ai.Config
+	aiAPIKey            string
+	equipmentConfigPath string
+	pending             map[string]AIActionPermission
+	permissionSequence  atomic.Uint64
 }
 
 type StudioSnapshot struct {
@@ -64,7 +66,11 @@ func NewStudioService(source fs.FS) (*StudioService, error) {
 	if err != nil {
 		return nil, err
 	}
-	return newStudioService(source, databasePath)
+	config, configPath, err := device.LoadRuntimeConfig(source, "configs/devices.yaml")
+	if err != nil {
+		return nil, err
+	}
+	return newStudioServiceWithConfig(source, databasePath, config, configPath)
 }
 
 func newStudioService(source fs.FS, databasePath string) (*StudioService, error) {
@@ -72,6 +78,10 @@ func newStudioService(source fs.FS, databasePath string) (*StudioService, error)
 	if err != nil {
 		return nil, err
 	}
+	return newStudioServiceWithConfig(source, databasePath, config, "")
+}
+
+func newStudioServiceWithConfig(source fs.FS, databasePath string, config device.Config, configPath string) (*StudioService, error) {
 	mockMQ := sink.NewMemory("mock-mq")
 	history, err := sqlitestore.Open(databasePath)
 	if err != nil {
@@ -87,7 +97,7 @@ func newStudioService(source fs.FS, databasePath string) (*StudioService, error)
 		_ = history.Close()
 		return nil, err
 	}
-	service := &StudioService{router: routes, config: config, automation: engine, store: history, updates: make(chan struct{}, 1), aiConfig: ai.Config{Provider: "local"}, pending: map[string]AIActionPermission{}}
+	service := &StudioService{router: routes, config: config, automation: engine, store: history, updates: make(chan struct{}, 1), aiConfig: ai.Config{Provider: "local"}, equipmentConfigPath: configPath, pending: map[string]AIActionPermission{}}
 	manager, err := device.NewManager(source, config, routes, engine, history, service.notify)
 	if err != nil {
 		_ = history.Close()
@@ -129,7 +139,7 @@ func (s *StudioService) AIConfig() ai.Config {
 	return s.aiConfig
 }
 
-func (s *StudioService) ConfigureAI(config ai.Config) error {
+func (s *StudioService) ConfigureAI(config ai.Config, apiKey string) error {
 	switch config.Provider {
 	case "local", "responses", "chat":
 	default:
@@ -137,8 +147,23 @@ func (s *StudioService) ConfigureAI(config ai.Config) error {
 	}
 	s.aiMu.Lock()
 	s.aiConfig = config
+	s.aiAPIKey = strings.TrimSpace(apiKey)
 	s.aiMu.Unlock()
 	return nil
+}
+
+type EquipmentConfigSaveResult struct {
+	Path            string `json:"path"`
+	RestartRequired bool   `json:"restartRequired"`
+}
+
+func (s *StudioService) EquipmentConfigPath() string { return s.equipmentConfigPath }
+
+func (s *StudioService) SaveEquipmentConfig(config device.Config) (EquipmentConfigSaveResult, error) {
+	if err := device.SaveConfig(s.equipmentConfigPath, config); err != nil {
+		return EquipmentConfigSaveResult{}, err
+	}
+	return EquipmentConfigSaveResult{Path: s.equipmentConfigPath, RestartRequired: true}, nil
 }
 
 // AskCopilot is a grounded, deterministic first-pass assistant. A provider-backed
@@ -168,7 +193,13 @@ func (s *StudioService) AskCopilot(question string, equipmentID string) CopilotR
 
 	config := s.AIConfig()
 	if config.Provider != "local" {
-		provider, err := ai.NewProvider(config, os.Getenv("EAPSTUDIO_AI_API_KEY"))
+		s.aiMu.RLock()
+		apiKey := s.aiAPIKey
+		s.aiMu.RUnlock()
+		if apiKey == "" {
+			apiKey = os.Getenv("EAPSTUDIO_AI_API_KEY")
+		}
+		provider, err := ai.NewProvider(config, apiKey)
 		if err != nil {
 			return CopilotReply{Answer: "AI provider 配置错误：" + err.Error()}
 		}

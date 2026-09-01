@@ -1,6 +1,8 @@
 automations:
   - name: send_recipe_on_material_arrival
     trigger: material.arrived
+    equipment:
+      - ETCHER-*
     command: send.recipe
     parameters:
       materialId: materialId

@@ -59,10 +59,12 @@ npm run build
 
 ## Configuration
 
-- `configs/devices.yaml` defines equipment instances and their connection/driver settings.
+- `configs/devices.yaml` is the packaged equipment template. On first run it is copied to the OS user config directory as `EapStudio/devices.yaml`; Settings edits that runtime file and reports that a restart is required.
 - `profiles/demo/etcher-x100.yaml` defines variables, reports, events, and field mappings for a model.
-- `configs/routes.yaml` maps canonical event names to sinks.
-- `configs/automations.yaml` maps Event triggers to Commands and parameter projections.
+- `configs/routes.yaml` maps canonical event-name and equipment-ID glob selectors to sinks.
+- `configs/automations.yaml` maps Event and equipment glob selectors to Commands and parameter projections.
+
+Keep equipment identity out of the canonical name: use `wafer.started` with `equipmentId: AOI-01`, not `AOI.01.wafer.started`. A common route can select `names: [wafer.*]` plus `equipment: [AOI-*]`, while another rule selects `equipment: [AOI-01]` for additional sinks. Every matching route contributes sinks and duplicate sink deliveries are removed. Automation rules are additive, so common and device-specific rules may both create Commands.
 
 The demo Profile declares reverse-mapped canonical scenarios and arbitrary SxFy templates. `material-arrival` and `wafer-start` use `GenericGemAdapter.BuildEvent` to generate S6F11 CEID/RPTID/value structures. `alarm-raised`, `alarm-cleared`, `remote-command`, and `recipe-download` demonstrate inbound S5F1 plus outbound S2F41 and S7F3 without hard-coded simulator methods.
 
@@ -95,7 +97,7 @@ To connect real equipment, change a device's `driver` from `simulator` to `go-se
 
 The current Copilot is deterministic and grounded in the live runtime/Profile snapshot. `StudioService.AskCopilot` is the provider boundary for adding OpenAI or another compatible model later; credentials and model calls stay in Go, outside the frontend and protocol response path.
 
-The Settings page maintains a list of local, OpenAI Responses API compatible, and Chat Completions compatible configurations, with one explicit runtime default. Provider secrets are read only from `EAPSTUDIO_AI_API_KEY`. Read-only questions are answered from the selected DeviceRuntime snapshot. A write request such as sending `send.recipe` produces a typed Allow/Deny permission card; only **Allow once** submits the command to the device queue.
+The Settings page maintains a list of local, OpenAI Responses API compatible, and Chat Completions compatible configurations, with one explicit runtime default. An API Key entered in Settings is passed to Go for the current process and is never written to localStorage; `EAPSTUDIO_AI_API_KEY` remains the fallback. The equipment editor persists IDs, display badges, Profile paths, Adapter names, drivers, and connection settings. `generic-gem` is built in, while model-specific Adapter names must be registered in the backend registry. Read-only questions are answered from the selected DeviceRuntime snapshot. A write request such as sending `send.recipe` produces a typed Allow/Deny permission card; only **Allow once** submits the command to the device queue.
 
 Messages expose working SML, structured Tree, and offset/hex/ASCII Raw views; simulator SML is encoded into complete HSMS frames so Raw remains useful without physical equipment. Messages, canonical events, and alarms use the configurable 25/50/100/200-record page size and equipment filters rather than endless scrolling, so an investigation keeps a stable position as live data arrives. The demo simulator also raises an initial S5F1 alarm to populate the alarm projection and its state/severity/equipment filters.
 

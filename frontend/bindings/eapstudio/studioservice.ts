@@ -8,6 +8,9 @@ import { Call as $Call, CancellablePromise as $CancellablePromise } from "@wails
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
 import * as ai$0 from "./internal/ai/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
+import * as device$0 from "./internal/device/models.js";
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
@@ -25,8 +28,8 @@ export function AskCopilot(question: string, equipmentID: string): $CancellableP
     return $Call.ByID(1361152184, question, equipmentID);
 }
 
-export function ConfigureAI(config: ai$0.Config): $CancellablePromise<void> {
-    return $Call.ByID(3253751891, config);
+export function ConfigureAI(config: ai$0.Config, apiKey: string): $CancellablePromise<void> {
+    return $Call.ByID(3253751891, config, apiKey);
 }
 
 export function ConnectDevice(id: string): $CancellablePromise<void> {
@@ -41,8 +44,16 @@ export function EmitSimulatorScenario(id: string, scenario: string): $Cancellabl
     return $Call.ByID(3108572356, id, scenario);
 }
 
+export function EquipmentConfigPath(): $CancellablePromise<string> {
+    return $Call.ByID(1315334092);
+}
+
 export function ResolveAIAction(permissionID: string, allow: boolean): $CancellablePromise<$models.CopilotReply> {
     return $Call.ByID(1547149465, permissionID, allow);
+}
+
+export function SaveEquipmentConfig(config: device$0.Config): $CancellablePromise<$models.EquipmentConfigSaveResult> {
+    return $Call.ByID(73226380, config);
 }
 
 export function Snapshot(): $CancellablePromise<$models.StudioSnapshot> {

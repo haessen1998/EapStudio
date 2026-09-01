@@ -3,6 +3,7 @@
 
 export interface Match {
     "names": string[] | null;
+    "equipment"?: string[] | null;
 }
 
 export interface Rule {

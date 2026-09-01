@@ -22,3 +22,28 @@ func TestEngineCreatesCorrelatedCommand(t *testing.T) {
 		t.Fatalf("command = %#v", commands[0])
 	}
 }
+
+func TestEngineMatchesEventAndEquipmentGlobsAdditively(t *testing.T) {
+	source := fstest.MapFS{"automations.yaml": {Data: []byte(`automations:
+  - name: all_aoi
+    trigger: wafer.*
+    equipment: [AOI-*]
+    command: inspect.wafer
+  - name: aoi_01_only
+    trigger: wafer.started
+    equipment: [AOI-01]
+    command: send.recipe
+`)}}
+	engine, err := Load(source, "automations.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := event.Event{ID: "evt-1", Type: domain.TypeEvent, Name: "wafer.started", EquipmentID: "AOI-01"}
+	if got := len(engine.Handle(base)); got != 2 {
+		t.Fatalf("AOI-01 commands = %d, want 2", got)
+	}
+	base.EquipmentID = "AOI-02"
+	if got := len(engine.Handle(base)); got != 1 {
+		t.Fatalf("AOI-02 commands = %d, want 1", got)
+	}
+}

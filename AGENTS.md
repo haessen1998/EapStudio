@@ -14,6 +14,7 @@ An agent working in this repository is expected to help engineers integrate a ne
 - `Profile` describes equipment knowledge: variables, reports, CEIDs, commands, simulator templates, and model-specific mappings.
 - `Adapter` translates protocol messages to canonical events and canonical commands back to protocol messages.
 - `Automation Engine` consumes events and creates commands. `Router` distributes canonical events and must not depend on SECS message structures.
+- Keep equipment identity in `equipmentId`, not in canonical names. Use event/equipment glob selectors in routes and automations (`wafer.*` + `AOI-*`) for shared behavior and an exact equipment selector for exceptions.
 - Events use `type=event` and noun/state names such as `material.arrived`, `alarm.raised`, and `recipe.sent`.
 - Commands use `type=command` and verb/object names such as `send.recipe`.
 - Preserve `correlationId`, `causationId`, and `commandId` so AI and operators can reconstruct the causal chain without coupling events.

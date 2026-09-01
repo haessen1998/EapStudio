@@ -6,7 +6,24 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"eapstudio/internal/ai"
 )
+
+func TestConfigureAIKeepsAPIKeyInBackendOnly(t *testing.T) {
+	service, err := newStudioService(os.DirFS("."), t.TempDir()+"/eapstudio-test.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer service.close()
+	config := ai.Config{Provider: "responses", BaseURL: "https://example.invalid/v1", Model: "test-model"}
+	if err := service.ConfigureAI(config, "  session-secret  "); err != nil {
+		t.Fatal(err)
+	}
+	if service.aiAPIKey != "session-secret" || service.AIConfig() != config {
+		t.Fatalf("AI config/key not retained correctly: config=%#v key=%q", service.AIConfig(), service.aiAPIKey)
+	}
+}
 
 func TestDemoPipelineRunsForTwoDevices(t *testing.T) {
 	service, err := newStudioService(os.DirFS("."), t.TempDir()+"/eapstudio-test.db")

@@ -4,6 +4,7 @@
 export interface Rule {
     "name": string;
     "trigger": string;
+    "equipment"?: string[] | null;
     "command": string;
     "parameters": { [_ in string]?: string } | null;
 }

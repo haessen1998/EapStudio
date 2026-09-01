@@ -2,12 +2,12 @@ routes:
   - name: production-events
     match:
       names:
-        - wafer.started
-        - material.arrived
-        - recipe.sent
-        - recipe.failed
-        - alarm.raised
-        - alarm.cleared
+        - wafer.*
+        - material.*
+        - recipe.*
+        - alarm.*
+      equipment:
+        - ETCHER-*
     sinks:
       - mock-mq
       - sqlite-history
@@ -16,5 +16,7 @@ routes:
     match:
       names:
         - secs.unknown
+      equipment:
+        - ETCHER-*
     sinks:
       - sqlite-history

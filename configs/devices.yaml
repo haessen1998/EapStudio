@@ -1,7 +1,9 @@
 devices:
   - id: ETCHER-01
+    badge: "01"
     name: Etcher #1
     profile: profiles/demo/etcher-x100.yaml
+    adapter: generic-gem
     driver: simulator
     autoConnect: true
     connection:
@@ -12,8 +14,10 @@ devices:
       sessionId: 0
 
   - id: ETCHER-02
+    badge: "02"
     name: Etcher #2
     profile: profiles/demo/etcher-x100.yaml
+    adapter: generic-gem
     driver: simulator
     autoConnect: true
     connection:
