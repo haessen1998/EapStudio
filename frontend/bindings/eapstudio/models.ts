@@ -39,6 +39,11 @@ export interface EquipmentConfigSaveResult {
     "restartRequired": boolean;
 }
 
+export interface RuleReloadResult {
+    "routes": number;
+    "automations": number;
+}
+
 export interface StudioSnapshot {
     "devices": device$0.Snapshot[] | null;
     "routes": router$0.Rule[] | null;

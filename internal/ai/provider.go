@@ -3,10 +3,12 @@ package ai
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -18,8 +20,16 @@ type Config struct {
 }
 
 type Request struct {
-	System string
-	Prompt string
+	System      string
+	Prompt      string
+	Attachments []Attachment
+}
+
+type Attachment struct {
+	Name      string `json:"name"`
+	MediaType string `json:"mediaType"`
+	DataURL   string `json:"dataURL"`
+	Size      int    `json:"size"`
 }
 
 type Provider interface {
@@ -28,7 +38,7 @@ type Provider interface {
 
 func NewProvider(config Config, apiKey string) (Provider, error) {
 	client := &http.Client{Timeout: 45 * time.Second}
-	baseURL := strings.TrimRight(config.BaseURL, "/")
+	baseURL := normalizeBaseURL(config.BaseURL)
 	if baseURL == "" {
 		baseURL = "https://api.openai.com/v1"
 	}
@@ -41,6 +51,18 @@ func NewProvider(config Config, apiKey string) (Provider, error) {
 	default:
 		return nil, fmt.Errorf("unsupported AI provider %q", config.Provider)
 	}
+}
+
+func normalizeBaseURL(value string) string {
+	baseURL := strings.TrimRight(strings.TrimSpace(value), "/")
+	if baseURL == "" {
+		return "https://api.openai.com/v1"
+	}
+	parsed, err := url.Parse(baseURL)
+	if err == nil && strings.EqualFold(parsed.Host, "api.openai.com") && (parsed.Path == "" || parsed.Path == "/") {
+		return baseURL + "/v1"
+	}
+	return baseURL
 }
 
 type httpAdapter struct {
@@ -61,7 +83,11 @@ func (a httpAdapter) post(ctx context.Context, path string, payload any, target 
 	if err != nil {
 		return err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, a.baseURL+path, bytes.NewReader(body))
+	endpoint := a.baseURL
+	if !strings.HasSuffix(endpoint, path) {
+		endpoint += path
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
@@ -77,6 +103,16 @@ func (a httpAdapter) post(ctx context.Context, path string, payload any, target 
 		return err
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		var providerError struct {
+			Error struct {
+				Message string `json:"message"`
+				Type    string `json:"type"`
+				Code    any    `json:"code"`
+			} `json:"error"`
+		}
+		if json.Unmarshal(data, &providerError) == nil && providerError.Error.Message != "" {
+			return fmt.Errorf("AI provider returned %s: %s (%v)", response.Status, providerError.Error.Message, providerError.Error.Code)
+		}
 		return fmt.Errorf("AI provider returned %s: %s", response.Status, strings.TrimSpace(string(data)))
 	}
 	if err := json.Unmarshal(data, target); err != nil {
@@ -97,7 +133,16 @@ func (a *ResponsesAdapter) Complete(ctx context.Context, request Request) (strin
 			} `json:"content"`
 		} `json:"output"`
 	}
-	err := a.post(ctx, "/responses", map[string]any{"model": a.model, "instructions": request.System, "input": request.Prompt}, &response)
+	content := []map[string]any{{"type": "input_text", "text": request.Prompt}}
+	for _, attachment := range request.Attachments {
+		if strings.HasPrefix(attachment.MediaType, "image/") {
+			content = append(content, map[string]any{"type": "input_image", "image_url": attachment.DataURL, "detail": "auto"})
+		} else {
+			content = append(content, map[string]any{"type": "input_file", "filename": attachment.Name, "file_data": attachment.DataURL})
+		}
+	}
+	input := []map[string]any{{"role": "user", "content": content}}
+	err := a.post(ctx, "/responses", map[string]any{"model": a.model, "instructions": request.System, "input": input, "store": false}, &response)
 	if err != nil {
 		return "", err
 	}
@@ -127,7 +172,19 @@ func (a *ChatCompletionsAdapter) Complete(ctx context.Context, request Request) 
 			} `json:"message"`
 		} `json:"choices"`
 	}
-	payload := map[string]any{"model": a.model, "messages": []map[string]string{{"role": "system", "content": request.System}, {"role": "user", "content": request.Prompt}}}
+	content := []map[string]any{{"type": "text", "text": request.Prompt}}
+	for _, attachment := range request.Attachments {
+		if strings.HasPrefix(attachment.MediaType, "image/") {
+			content = append(content, map[string]any{"type": "image_url", "image_url": map[string]any{"url": attachment.DataURL, "detail": "auto"}})
+			continue
+		}
+		text, err := decodeTextAttachment(attachment)
+		if err != nil {
+			return "", fmt.Errorf("Chat adapter attachment %q: %w; use the Responses adapter for PDFs and binary files", attachment.Name, err)
+		}
+		content = append(content, map[string]any{"type": "text", "text": fmt.Sprintf("Attached file %s:\n%s", attachment.Name, text)})
+	}
+	payload := map[string]any{"model": a.model, "messages": []map[string]any{{"role": "system", "content": request.System}, {"role": "user", "content": content}}}
 	if err := a.post(ctx, "/chat/completions", payload, &response); err != nil {
 		return "", err
 	}
@@ -135,4 +192,19 @@ func (a *ChatCompletionsAdapter) Complete(ctx context.Context, request Request) 
 		return "", fmt.Errorf("Chat Completions API returned no text")
 	}
 	return response.Choices[0].Message.Content, nil
+}
+
+func decodeTextAttachment(attachment Attachment) (string, error) {
+	comma := strings.IndexByte(attachment.DataURL, ',')
+	if comma < 0 || !strings.Contains(attachment.DataURL[:comma], ";base64") {
+		return "", fmt.Errorf("invalid data URL")
+	}
+	data, err := base64.StdEncoding.DecodeString(attachment.DataURL[comma+1:])
+	if err != nil {
+		return "", fmt.Errorf("decode data: %w", err)
+	}
+	if !strings.HasPrefix(attachment.MediaType, "text/") && attachment.MediaType != "application/json" && attachment.MediaType != "application/xml" {
+		return "", fmt.Errorf("unsupported media type %s", attachment.MediaType)
+	}
+	return string(data), nil
 }

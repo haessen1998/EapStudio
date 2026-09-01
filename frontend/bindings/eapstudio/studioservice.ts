@@ -24,8 +24,8 @@ export function AIConfig(): $CancellablePromise<ai$0.Config> {
  * AskCopilot is a grounded, deterministic first-pass assistant. A provider-backed
  * implementation can replace it without moving credentials into the frontend.
  */
-export function AskCopilot(question: string, equipmentID: string): $CancellablePromise<$models.CopilotReply> {
-    return $Call.ByID(1361152184, question, equipmentID);
+export function AskCopilot(question: string, equipmentID: string, attachments: ai$0.Attachment[] | null): $CancellablePromise<$models.CopilotReply> {
+    return $Call.ByID(1361152184, question, equipmentID, attachments);
 }
 
 export function ConfigureAI(config: ai$0.Config, apiKey: string): $CancellablePromise<void> {
@@ -48,6 +48,10 @@ export function EquipmentConfigPath(): $CancellablePromise<string> {
     return $Call.ByID(1315334092);
 }
 
+export function ReloadRules(): $CancellablePromise<$models.RuleReloadResult> {
+    return $Call.ByID(3389865889);
+}
+
 export function ResolveAIAction(permissionID: string, allow: boolean): $CancellablePromise<$models.CopilotReply> {
     return $Call.ByID(1547149465, permissionID, allow);
 }
@@ -58,4 +62,8 @@ export function SaveEquipmentConfig(config: device$0.Config): $CancellablePromis
 
 export function Snapshot(): $CancellablePromise<$models.StudioSnapshot> {
     return $Call.ByID(799204223);
+}
+
+export function TestAIConfiguration(config: ai$0.Config, apiKey: string): $CancellablePromise<string> {
+    return $Call.ByID(2294031345, config, apiKey);
 }

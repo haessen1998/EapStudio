@@ -1,22 +1,36 @@
 routes:
-  - name: production-events
+  - name: canonical-history
     match:
-      names:
-        - wafer.*
-        - material.*
-        - recipe.*
-        - alarm.*
-      equipment:
-        - ETCHER-*
-    sinks:
-      - mock-mq
-      - sqlite-history
+      names: ["*"]
+      equipment: ["*"]
+    sinks: [sqlite-history]
 
-  - name: unknown-secs-events
+  - name: shared-material-flow
     match:
-      names:
-        - secs.unknown
-      equipment:
-        - ETCHER-*
-    sinks:
-      - sqlite-history
+      names: [material.*, recipe.*]
+      equipment: [ETCHER-*, AOI-*, OVEN-*]
+    sinks: [mock-mq]
+
+  - name: etcher-production
+    match:
+      names: [wafer.*]
+      equipment: [ETCHER-*]
+    sinks: [mock-mq]
+
+  - name: aoi-quality
+    match:
+      names: [inspection.*, review.*]
+      equipment: [AOI-*]
+    sinks: [quality-mq]
+
+  - name: aoi-01-exception
+    match:
+      names: [inspection.failed]
+      equipment: [AOI-01]
+    sinks: [mock-mq]
+
+  - name: oven-thermal
+    match:
+      names: [batch.*, temperature.*, alarm.*]
+      equipment: [OVEN-*]
+    sinks: [thermal-mq]

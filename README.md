@@ -32,7 +32,7 @@ isolated DeviceRuntime
        Mock MQ     SQLite history
 ```
 
-Two simulator-backed device instances (`ETCHER-01` and `ETCHER-02`) share one `demo-etcher-x100` Profile while retaining independent connection state, message queues, traces, and event pipelines.
+Four simulator-backed device instances demonstrate equipment-family isolation: `ETCHER-01` and `ETCHER-02` share `demo-etcher-x100`, `AOI-01` uses `demo-aoi-v200`, and `OVEN-01` uses `demo-oven-t300`. Each retains independent connection state, message queues, traces, and event pipelines.
 
 ## Run
 
@@ -63,6 +63,10 @@ npm run build
 - `profiles/demo/etcher-x100.yaml` defines variables, reports, events, and field mappings for a model.
 - `configs/routes.yaml` maps canonical event-name and equipment-ID glob selectors to sinks.
 - `configs/automations.yaml` maps Event and equipment glob selectors to Commands and parameter projections.
+
+The sample routes include shared material flow, Etcher production, AOI quality, an `AOI-01` exact exception, Oven thermal events, and a catch-all SQLite history route. The sample automations demonstrate common material-arrival recipe selection plus AOI review and Oven temperature-deviation actions.
+
+At first production startup, `routes.yaml` and `automations.yaml` are copied beside the runtime `devices.yaml`. They are watched for changes and are validated and swapped together within about 1.5 seconds; invalid YAML leaves the last valid rules active. Router and Automation edits therefore do not require a restart. Equipment/Profile/driver edits still require a restart because they replace DeviceRuntime instances.
 
 Keep equipment identity out of the canonical name: use `wafer.started` with `equipmentId: AOI-01`, not `AOI.01.wafer.started`. A common route can select `names: [wafer.*]` plus `equipment: [AOI-*]`, while another rule selects `equipment: [AOI-01]` for additional sinks. Every matching route contributes sinks and duplicate sink deliveries are removed. Automation rules are additive, so common and device-specific rules may both create Commands.
 
@@ -97,7 +101,7 @@ To connect real equipment, change a device's `driver` from `simulator` to `go-se
 
 The current Copilot is deterministic and grounded in the live runtime/Profile snapshot. `StudioService.AskCopilot` is the provider boundary for adding OpenAI or another compatible model later; credentials and model calls stay in Go, outside the frontend and protocol response path.
 
-The Settings page maintains a list of local, OpenAI Responses API compatible, and Chat Completions compatible configurations, with one explicit runtime default. An API Key entered in Settings is passed to Go for the current process and is never written to localStorage; `EAPSTUDIO_AI_API_KEY` remains the fallback. The equipment editor persists IDs, display badges, Profile paths, Adapter names, drivers, and connection settings. `generic-gem` is built in, while model-specific Adapter names must be registered in the backend registry. Read-only questions are answered from the selected DeviceRuntime snapshot. A write request such as sending `send.recipe` produces a typed Allow/Deny permission card; only **Allow once** submits the command to the device queue.
+The Settings page maintains a list of local, OpenAI Responses API compatible, and Chat Completions compatible configurations, with one explicit runtime default. An API Key entered in Settings is passed to Go for the current process and is never written to localStorage; `EAPSTUDIO_AI_API_KEY` remains the fallback. OpenAI Responses profiles receive a current default model when an older saved profile has an empty model. The Copilot supports up to four images or files (5 MB each): Responses receives native `input_image`/`input_file` content, while Chat-compatible endpoints receive images and supported text documents. Provider errors are decoded and displayed in the conversation. The equipment editor persists IDs, display badges, Profile paths, Adapter names, drivers, and connection settings. `generic-gem` is built in, while model-specific Adapter names must be registered in the backend registry. Read-only questions are answered from the selected DeviceRuntime snapshot. A write request such as sending `send.recipe` produces a typed Allow/Deny permission card; only **Allow once** submits the command to the device queue.
 
 Messages expose working SML, structured Tree, and offset/hex/ASCII Raw views; simulator SML is encoded into complete HSMS frames so Raw remains useful without physical equipment. Messages, canonical events, and alarms use the configurable 25/50/100/200-record page size and equipment filters rather than endless scrolling, so an investigation keeps a stable position as live data arrives. The demo simulator also raises an initial S5F1 alarm to populate the alarm projection and its state/severity/equipment filters.
 

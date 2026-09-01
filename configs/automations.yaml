@@ -1,9 +1,30 @@
 automations:
-  - name: send_recipe_on_material_arrival
+  - name: etcher_recipe_on_arrival
     trigger: material.arrived
-    equipment:
-      - ETCHER-*
+    equipment: [ETCHER-*]
     command: send.recipe
-    parameters:
-      materialId: materialId
-      recipeId: recipeId
+    parameters: { materialId: materialId, recipeId: recipeId }
+
+  - name: aoi_recipe_on_arrival
+    trigger: material.arrived
+    equipment: [AOI-*]
+    command: send.recipe
+    parameters: { materialId: materialId, recipeId: recipeId }
+
+  - name: aoi_review_on_failure
+    trigger: inspection.failed
+    equipment: [AOI-*]
+    command: request.review
+    parameters: { waferId: waferId }
+
+  - name: oven_recipe_on_arrival
+    trigger: material.arrived
+    equipment: [OVEN-*]
+    command: send.recipe
+    parameters: { materialId: materialId, recipeId: recipeId }
+
+  - name: stop_oven_on_temperature_deviation
+    trigger: temperature.deviated
+    equipment: [OVEN-*]
+    command: stop.batch
+    parameters: { batchId: batchId }

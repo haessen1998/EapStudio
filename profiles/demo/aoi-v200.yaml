@@ -1,0 +1,79 @@
+apiVersion: eapstudio/v1alpha1
+kind: EquipmentProfile
+metadata:
+  name: demo-aoi-v200
+  vendor: EapStudio Demo
+  model: AOI-V200
+  version: 1.0.0
+  adapter: generic-gem
+spec:
+  variables:
+    201: { name: MaterialId, type: A, description: Incoming wafer material }
+    202: { name: RequestedRecipe, type: A, description: Inspection recipe }
+    203: { name: PortId, type: A, description: Load port }
+    301: { name: WaferId, type: A, description: Inspected wafer }
+    302: { name: DefectCount, type: U4, description: Detected defect count }
+    303: { name: Result, type: A, description: Inspection result }
+  reports:
+    2101: { name: MaterialArrival, variables: [201, 202, 203] }
+    3001: { name: InspectionResult, variables: [301, 302, 303] }
+  events:
+    1101:
+      name: material.arrived
+      displayName: Wafer arrived at AOI
+      reports: [2101]
+      mapping:
+        materialId: { report: 2101, variable: 201 }
+        recipeId: { report: 2101, variable: 202 }
+        portId: { report: 2101, variable: 203 }
+    3001:
+      name: inspection.completed
+      displayName: Inspection completed
+      reports: [3001]
+      mapping:
+        waferId: { report: 3001, variable: 301 }
+        defectCount: { report: 3001, variable: 302 }
+        result: { report: 3001, variable: 303 }
+  commands:
+    send.recipe:
+      displayName: Select inspection recipe
+      stream: 2
+      function: 41
+      wait: true
+      parameters: [recipeId, materialId]
+      successEvent: recipe.sent
+      failureEvent: recipe.failed
+      successAck: 0
+    request.review:
+      displayName: Request operator review
+      stream: 2
+      function: 41
+      wait: true
+      parameters: [waferId]
+      successEvent: review.requested
+      failureEvent: review.failed
+      successAck: 0
+  simulator:
+    scenarios:
+      material-arrival:
+        displayName: AOI material arrival
+        event: material.arrived
+        data: { materialId: "AOI-MAT-${sequence}", recipeId: AOI-STD, portId: LP01 }
+      inspection-completed:
+        displayName: Inspection completed
+        event: inspection.completed
+        data: { waferId: "WAFER-${sequence}", defectCount: 3, result: REVIEW }
+      review-command:
+        displayName: Operator review command
+        direction: outbound
+        message:
+          stream: 2
+          function: 41
+          wait: true
+          sml: |
+            S2F41 W
+            <L[2]
+              <A "REVIEW">
+              <L[0]>
+            >
+            .

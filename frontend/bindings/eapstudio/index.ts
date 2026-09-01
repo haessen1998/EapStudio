@@ -10,5 +10,6 @@ export type {
     AIActionPermission,
     CopilotReply,
     EquipmentConfigSaveResult,
+    RuleReloadResult,
     StudioSnapshot
 } from "./models.js";

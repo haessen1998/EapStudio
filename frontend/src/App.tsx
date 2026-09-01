@@ -2,7 +2,7 @@ import { CSSProperties, DragEvent as ReactDragEvent, FormEvent, PointerEvent as 
 import {
   Activity, BellRing, Bot, Boxes, Cable, ChevronRight, CircleGauge, Cpu, Database, FlaskConical,
   Code2, GitBranch, GripVertical, MessageSquareText, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, Play, PlugZap, Radio, RefreshCw, Route, Server,
-  Plus, Search, Settings2, ShieldCheck, ShieldX, Sparkles, Trash2, Unplug, Waves,
+  FileText, Image as ImageIcon, Paperclip, Plus, Search, Settings2, ShieldCheck, ShieldX, Sparkles, Trash2, Unplug, Waves, X,
 } from "lucide-react"
 import { Events } from "@wailsio/runtime"
 import { StudioService, type StudioSnapshot } from "../bindings/eapstudio"
@@ -21,6 +21,7 @@ type CanonicalEvent = NonNullable<Device["events"]>[number]
 type EquipmentCommand = NonNullable<Device["commands"]>[number]
 type AlarmRecord = NonNullable<StudioSnapshot["alarms"]>[number]
 type PermissionRequest = NonNullable<Awaited<ReturnType<typeof StudioService.AskCopilot>>["permission"]>
+type CopilotAttachment = { name: string; mediaType: string; dataURL: string; size: number }
 type PageSize = 25 | 50 | 100 | 200
 type AIProfile = { id: string; name: string; provider: "local" | "responses" | "chat"; baseURL: string; model: string; apiKey: string }
 type EquipmentDraft = { key: string; id: string; badge: string; name: string; profile: string; adapter: string; driver: string; autoConnect: boolean; protocol: string; mode: string; host: string; port: number; sessionId: number }
@@ -46,7 +47,7 @@ function loadPageSize(): PageSize {
 
 function initialAIProfiles(): AIProfile[] {
   const baseURL = localStorage.getItem("eapstudio.ai.baseURL") ?? "https://api.openai.com/v1"
-  const model = localStorage.getItem("eapstudio.ai.model") ?? ""
+  const model = localStorage.getItem("eapstudio.ai.model")?.trim() || "gpt-5.6-luna"
   return [
     { id: "local", name: "Local grounded", provider: "local", baseURL: "", model: "", apiKey: "" },
     { id: "responses", name: "OpenAI Responses", provider: "responses", baseURL, model, apiKey: "" },
@@ -58,7 +59,7 @@ function loadAIProfiles(): AIProfile[] {
   try {
     const value = JSON.parse(localStorage.getItem("eapstudio.ai.profiles") ?? "[]")
     if (!Array.isArray(value) || !value.length) return initialAIProfiles()
-    const profiles = value.filter((item: Partial<AIProfile>) => item && typeof item.id === "string" && typeof item.name === "string" && ["local", "responses", "chat"].includes(item.provider ?? "")).map((item: Omit<AIProfile, "apiKey">) => ({ ...item, apiKey: "" })) as AIProfile[]
+    const profiles = value.filter((item: Partial<AIProfile>) => item && typeof item.id === "string" && typeof item.name === "string" && ["local", "responses", "chat"].includes(item.provider ?? "")).map((item: Omit<AIProfile, "apiKey">) => ({ ...item, model: item.model?.trim() || (item.provider === "responses" ? "gpt-5.6-luna" : ""), apiKey: "" })) as AIProfile[]
     return profiles.length ? profiles : initialAIProfiles()
   } catch {
     return initialAIProfiles()
@@ -113,7 +114,7 @@ function App() {
   const visibleEvents = useMemo(() => allEvents.filter((event) => !normalizedQuery || `${event.name} ${event.equipmentId} ${event.correlationId} ${JSON.stringify(event.data)}`.toLowerCase().includes(normalizedQuery)), [allEvents, normalizedQuery])
   const visibleAlarms = useMemo(() => (snapshot.alarms ?? []).filter((alarm) => !normalizedQuery || `${alarm.equipmentId} ${alarm.alarmId} ${alarm.code} ${alarm.text} ${alarm.severity} ${alarm.state}`.toLowerCase().includes(normalizedQuery)), [snapshot.alarms, normalizedQuery])
 
-  const refresh = () => StudioService.Snapshot().then(setSnapshot).catch((reason) => setError(String(reason)))
+  const refresh = () => StudioService.ReloadRules().then(() => StudioService.Snapshot()).then(setSnapshot).catch((reason) => setError(String(reason)))
 
   useEffect(() => {
     document.documentElement.dataset.theme = localStorage.getItem("eapstudio.theme") ?? "dark"
@@ -271,7 +272,7 @@ function DeviceDetail({ device, onConnect, onDisconnect, onEmit }: { device: Dev
   </div>
 }
 
-function InfoCard({ label, value, sub, icon: Icon }: { label: string; value: string; sub: string; icon: typeof Cable }) { return <Card><CardContent className="flex gap-3 p-4"><div className="rounded-lg bg-primary/10 p-2 text-primary"><Icon className="size-4" /></div><div><p className="text-[10px] uppercase tracking-wider text-muted-foreground">{label}</p><p className="mt-1 text-sm font-medium">{value}</p><p className="text-[10px] text-muted-foreground">{sub}</p></div></CardContent></Card> }
+function InfoCard({ label, value, sub, icon: Icon }: { label: string; value: string; sub: string; icon: typeof Cable }) { return <Card><CardContent className="flex items-center gap-3 p-4"><div className="grid size-9 shrink-0 place-items-center rounded-lg bg-primary/10 text-primary"><Icon className="size-4" /></div><div><p className="text-[10px] uppercase tracking-wider text-muted-foreground">{label}</p><p className="mt-1 text-sm font-medium">{value}</p><p className="text-[10px] text-muted-foreground">{sub}</p></div></CardContent></Card> }
 
 function Messages({ messages, selected, pageSize, onSelect }: { messages: SecsMessage[]; selected: SecsMessage | null; pageSize: PageSize; onSelect: (message: SecsMessage) => void }) {
   const [direction, setDirection] = useState("ALL")
@@ -436,10 +437,21 @@ function SettingsPage({ devices, pageSize, onPageSizeChange }: { devices: Device
   </div>
 }
 
+function readAttachment(file: File): Promise<CopilotAttachment> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onerror = () => reject(reader.error ?? new Error("Unable to read attachment"))
+    reader.onload = () => resolve({ name: file.name, mediaType: file.type || "application/octet-stream", dataURL: String(reader.result), size: file.size })
+    reader.readAsDataURL(file)
+  })
+}
+
 function Copilot({ device, collapsed }: { device?: Device; collapsed: boolean }) {
-  type ChatMessage = { id: string; from: "user" | "assistant"; text: string; evidence?: string[]; permission?: PermissionRequest; permissionStatus?: "pending" | "allowed" | "denied" }
+  type ChatMessage = { id: string; from: "user" | "assistant"; text: string; attachments?: CopilotAttachment[]; evidence?: string[]; permission?: PermissionRequest; permissionStatus?: "pending" | "allowed" | "denied" }
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [prompt, setPrompt] = useState("")
+  const [attachments, setAttachments] = useState<CopilotAttachment[]>([])
+  const [attachmentError, setAttachmentError] = useState("")
   const [loading, setLoading] = useState(false)
   const [provider, setProvider] = useState("local")
   useEffect(() => {
@@ -448,9 +460,46 @@ function Copilot({ device, collapsed }: { device?: Device; collapsed: boolean })
     window.addEventListener("eapstudio:ai-config-changed", refreshProvider)
     return () => window.removeEventListener("eapstudio:ai-config-changed", refreshProvider)
   }, [loading])
-  const ask = async (event: FormEvent) => { event.preventDefault(); const question = prompt.trim(); if (!question || !device) return; setPrompt(""); setMessages((value) => [...value, { id: `user-${Date.now()}`, from: "user", text: question }]); setLoading(true); try { const reply = await StudioService.AskCopilot(question, device.id); setMessages((value) => [...value, { id: `assistant-${Date.now()}`, from: "assistant", text: reply.answer, evidence: reply.evidence ?? [], permission: reply.permission ?? undefined, permissionStatus: reply.permission ? "pending" : undefined }]) } finally { setLoading(false) } }
+  const selectFiles = async (files: FileList | null) => {
+    if (!files?.length) return
+    setAttachmentError("")
+    const selected = Array.from(files).slice(0, Math.max(0, 4 - attachments.length))
+    const oversized = selected.find((file) => file.size > 5 * 1024 * 1024)
+    if (oversized) { setAttachmentError(`${oversized.name} exceeds the 5 MB limit.`); return }
+    try {
+      const loaded = await Promise.all(selected.map(readAttachment))
+      setAttachments((current) => [...current, ...loaded].slice(0, 4))
+    } catch (reason) { setAttachmentError(String(reason)) }
+  }
+  const ask = async (event: FormEvent) => {
+    event.preventDefault()
+    const question = prompt.trim() || (attachments.length ? "请分析这些附件，并结合当前设备状态回答。" : "")
+    if (!question || !device) return
+    const outgoing = [...attachments]
+    setPrompt("")
+    setAttachments([])
+    setAttachmentError("")
+    setMessages((value) => [...value, { id: `user-${Date.now()}`, from: "user", text: question, attachments: outgoing }])
+    setLoading(true)
+    try {
+      const reply = await StudioService.AskCopilot(question, device.id, outgoing)
+      setMessages((value) => [...value, { id: `assistant-${Date.now()}`, from: "assistant", text: reply.answer, evidence: reply.evidence ?? [], permission: reply.permission ?? undefined, permissionStatus: reply.permission ? "pending" : undefined }])
+    } catch (reason) {
+      setMessages((value) => [...value, { id: `assistant-${Date.now()}`, from: "assistant", text: `AI 调用失败：${String(reason)}`, evidence: [provider + " adapter"] }])
+    } finally { setLoading(false) }
+  }
   const resolvePermission = async (messageID: string, permissionID: string, allow: boolean) => { setMessages((value) => value.map((message) => message.id === messageID ? { ...message, permissionStatus: allow ? "allowed" : "denied" } : message)); const reply = await StudioService.ResolveAIAction(permissionID, allow); setMessages((value) => [...value, { id: `assistant-${Date.now()}`, from: "assistant", text: reply.answer, evidence: reply.evidence ?? [] }]) }
-  return <aside aria-hidden={collapsed} className={cn("copilot-panel", collapsed && "copilot-collapsed")}><div className="copilot-header"><div className="copilot-icon"><Bot className="size-4" /></div><div className="copilot-label"><h3>Equipment Copilot</h3><p>Grounded in live runtime context</p></div><Badge variant="success" className="copilot-label ml-auto">{provider}</Badge></div><div className="copilot-body"><Conversation><ConversationContent>{messages.length === 0 ? <ConversationEmptyState icon={<Sparkles className="size-7 text-primary" />} title="Ask about this equipment" description="Inspect state, explain messages, trace events, or prepare a permission-gated command." /> : messages.map((message) => <AIMessage key={message.id} from={message.from}><MessageContent><MessageResponse>{message.text}</MessageResponse>{message.evidence?.length ? <Tool className="mt-3"><ToolHeader title="Runtime context"/><ToolContent>{message.evidence.join(" · ")}</ToolContent></Tool> : null}{message.permission && <PermissionCard permission={message.permission} status={message.permissionStatus ?? "pending"} onAllow={() => resolvePermission(message.id, message.permission!.id, true)} onDeny={() => resolvePermission(message.id, message.permission!.id, false)}/>}</MessageContent></AIMessage>)}</ConversationContent></Conversation><div className="suggestions">{["Explain latest message", "Trace material flow", "发送命令"].map((suggestion) => <button key={suggestion} onClick={() => setPrompt(suggestion)}>{suggestion}</button>)}</div><PromptInput className="copilot-composer" onSubmit={ask}><PromptInputTextarea value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder={`Ask about ${device?.id ?? "equipment"}…`} /><PromptInputSubmit loading={loading} /></PromptInput><p className="copilot-note">Write actions require explicit card approval.</p></div></aside>
+  return <aside aria-hidden={collapsed} className={cn("copilot-panel", collapsed && "copilot-collapsed")}>
+    <div className="copilot-header"><div className="copilot-icon"><Bot className="size-4" /></div><div className="copilot-label"><h3>Equipment Copilot</h3><p>Grounded in live runtime context</p></div><Badge variant="success" className="copilot-label ml-auto">{provider}</Badge></div>
+    <div className="copilot-body">
+      <Conversation><ConversationContent>{messages.length === 0 ? <ConversationEmptyState icon={<Sparkles className="size-7 text-primary" />} title="Ask about this equipment" description="Inspect state, explain messages, trace events, or attach equipment documents and images." /> : messages.map((message) => <AIMessage key={message.id} from={message.from}><MessageContent>{message.attachments?.length ? <div className="message-attachments">{message.attachments.map((item) => <div key={item.name}>{item.mediaType.startsWith("image/") ? <img src={item.dataURL} alt={item.name}/> : <FileText className="size-4"/>}<span>{item.name}</span></div>)}</div> : null}<MessageResponse>{message.text}</MessageResponse>{message.evidence?.length ? <Tool className="mt-3"><ToolHeader title="Runtime context"/><ToolContent>{message.evidence.join(" · ")}</ToolContent></Tool> : null}{message.permission && <PermissionCard permission={message.permission} status={message.permissionStatus ?? "pending"} onAllow={() => resolvePermission(message.id, message.permission!.id, true)} onDeny={() => resolvePermission(message.id, message.permission!.id, false)}/>}</MessageContent></AIMessage>)}</ConversationContent></Conversation>
+      <div className="suggestions">{["Explain latest message", "Trace material flow", "发送命令"].map((suggestion) => <button key={suggestion} onClick={() => setPrompt(suggestion)}>{suggestion}</button>)}</div>
+      {attachments.length > 0 && <div className="attachment-tray">{attachments.map((item) => <div key={item.name}>{item.mediaType.startsWith("image/") ? <ImageIcon className="size-3.5"/> : <FileText className="size-3.5"/>}<span>{item.name}</span><button onClick={() => setAttachments((current) => current.filter((value) => value !== item))} aria-label={`Remove ${item.name}`}><X className="size-3"/></button></div>)}</div>}
+      {attachmentError && <p className="attachment-error">{attachmentError}</p>}
+      <PromptInput className="copilot-composer" onSubmit={ask}><label className="attachment-button" title="Attach image or file"><Paperclip className="size-4"/><input type="file" multiple accept="image/*,.pdf,.txt,.md,.csv,.json,.xml,.log" onChange={(event) => { void selectFiles(event.target.files); event.target.value = "" }}/></label><PromptInputTextarea value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder={`Ask about ${device?.id ?? "equipment"}…`} /><PromptInputSubmit loading={loading} disabled={!prompt.trim() && attachments.length === 0}/></PromptInput>
+      <p className="copilot-note">Up to 4 files, 5 MB each · write actions require explicit approval.</p>
+    </div>
+  </aside>
 }
 
 function PermissionCard({ permission, status, onAllow, onDeny }: { permission: PermissionRequest; status: "pending" | "allowed" | "denied"; onAllow: () => void; onDeny: () => void }) {

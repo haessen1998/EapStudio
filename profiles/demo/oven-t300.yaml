@@ -1,0 +1,77 @@
+apiVersion: eapstudio/v1alpha1
+kind: EquipmentProfile
+metadata:
+  name: demo-oven-t300
+  vendor: EapStudio Demo
+  model: OVEN-T300
+  version: 1.0.0
+  adapter: generic-gem
+spec:
+  variables:
+    201: { name: MaterialId, type: A, description: Carrier identifier }
+    202: { name: RequestedRecipe, type: A, description: Thermal recipe }
+    203: { name: PortId, type: A, description: Load port }
+    401: { name: BatchId, type: A, description: Thermal batch }
+    402: { name: Recipe, type: A, description: Running recipe }
+    403: { name: Temperature, type: F8, description: Chamber temperature }
+  reports:
+    2101: { name: MaterialArrival, variables: [201, 202, 203] }
+    4001: { name: BatchState, variables: [401, 402, 403] }
+  events:
+    1101:
+      name: material.arrived
+      displayName: Carrier arrived at oven
+      reports: [2101]
+      mapping:
+        materialId: { report: 2101, variable: 201 }
+        recipeId: { report: 2101, variable: 202 }
+        portId: { report: 2101, variable: 203 }
+    4001:
+      name: batch.started
+      displayName: Thermal batch started
+      reports: [4001]
+      mapping:
+        batchId: { report: 4001, variable: 401 }
+        recipe: { report: 4001, variable: 402 }
+        temperature: { report: 4001, variable: 403 }
+    4002:
+      name: temperature.deviated
+      displayName: Temperature deviated
+      reports: [4001]
+      mapping:
+        batchId: { report: 4001, variable: 401 }
+        recipe: { report: 4001, variable: 402 }
+        temperature: { report: 4001, variable: 403 }
+  commands:
+    send.recipe:
+      displayName: Download thermal recipe
+      stream: 7
+      function: 3
+      wait: true
+      parameters: [recipeId, materialId]
+      successEvent: recipe.sent
+      failureEvent: recipe.failed
+      successAck: 0
+    stop.batch:
+      displayName: Stop thermal batch
+      stream: 2
+      function: 41
+      wait: true
+      parameters: [batchId]
+      successEvent: batch.stopped
+      failureEvent: batch.stop_failed
+      successAck: 0
+  simulator:
+    scenarios:
+      material-arrival:
+        displayName: Oven material arrival
+        event: material.arrived
+        data: { materialId: "CARRIER-${sequence}", recipeId: BAKE-420, portId: LOAD }
+      batch-started:
+        displayName: Batch started
+        event: batch.started
+        data: { batchId: "BATCH-${sequence}", recipe: BAKE-420, temperature: 420.0 }
+      temperature-deviation:
+        displayName: Temperature deviation
+        event: temperature.deviated
+        data: { batchId: "BATCH-${sequence}", recipe: BAKE-420, temperature: 438.5 }

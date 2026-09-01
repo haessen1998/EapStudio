@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	pathpkg "path"
 	"strings"
+	"sync"
 	"time"
 
 	"eapstudio/internal/command"
@@ -26,11 +27,20 @@ type Rule struct {
 }
 
 type Engine struct {
+	mu    sync.RWMutex
 	rules []Rule
 }
 
 func Load(source fs.FS, path string) (*Engine, error) {
-	data, err := fs.ReadFile(source, path)
+	rules, err := ReadRules(source, path)
+	if err != nil {
+		return nil, err
+	}
+	return &Engine{rules: rules}, nil
+}
+
+func ReadRules(source fs.FS, filePath string) ([]Rule, error) {
+	data, err := fs.ReadFile(source, filePath)
 	if err != nil {
 		return nil, fmt.Errorf("read automations: %w", err)
 	}
@@ -60,7 +70,22 @@ func Load(source fs.FS, path string) (*Engine, error) {
 			return nil, fmt.Errorf("automation %q command: %w", rule.Name, err)
 		}
 	}
-	return &Engine{rules: config.Automations}, nil
+	return config.Automations, nil
+}
+
+func (e *Engine) Reload(source fs.FS, filePath string) error {
+	rules, err := ReadRules(source, filePath)
+	if err != nil {
+		return err
+	}
+	e.ReplaceRules(rules)
+	return nil
+}
+
+func (e *Engine) ReplaceRules(rules []Rule) {
+	e.mu.Lock()
+	e.rules = append([]Rule(nil), rules...)
+	e.mu.Unlock()
 }
 
 func (e *Engine) Handle(value event.Event) []command.Command {
@@ -68,7 +93,10 @@ func (e *Engine) Handle(value event.Event) []command.Command {
 		return nil
 	}
 	var commands []command.Command
-	for _, rule := range e.rules {
+	e.mu.RLock()
+	rules := append([]Rule(nil), e.rules...)
+	e.mu.RUnlock()
+	for _, rule := range rules {
 		triggered, _ := pathpkg.Match(rule.Trigger, value.Name)
 		if !triggered || !matchesEquipment(rule.Equipment, value.EquipmentID) {
 			continue
@@ -107,6 +135,8 @@ func matchesEquipment(patterns []string, equipmentID string) bool {
 }
 
 func (e *Engine) Rules() []Rule {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
 	result := make([]Rule, len(e.rules))
 	copy(result, e.rules)
 	return result

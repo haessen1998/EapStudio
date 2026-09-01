@@ -34,7 +34,20 @@ type Router struct {
 }
 
 func Load(source fs.FS, path string, sinks ...sink.Sink) (*Router, error) {
-	data, err := fs.ReadFile(source, path)
+	router := &Router{sinks: map[string]sink.Sink{}}
+	for _, output := range sinks {
+		router.sinks[output.Name()] = output
+	}
+	rules, err := ReadRules(source, path, router.sinks)
+	if err != nil {
+		return nil, err
+	}
+	router.rules = rules
+	return router, nil
+}
+
+func ReadRules(source fs.FS, filePath string, outputs map[string]sink.Sink) ([]Rule, error) {
+	data, err := fs.ReadFile(source, filePath)
 	if err != nil {
 		return nil, fmt.Errorf("read routes: %w", err)
 	}
@@ -44,11 +57,7 @@ func Load(source fs.FS, path string, sinks ...sink.Sink) (*Router, error) {
 	if err := decoder.Decode(&config); err != nil {
 		return nil, fmt.Errorf("decode routes: %w", err)
 	}
-	router := &Router{rules: config.Routes, sinks: map[string]sink.Sink{}}
-	for _, output := range sinks {
-		router.sinks[output.Name()] = output
-	}
-	for _, rule := range router.rules {
+	for _, rule := range config.Routes {
 		if rule.Name == "" {
 			return nil, fmt.Errorf("route name is required")
 		}
@@ -61,17 +70,39 @@ func Load(source fs.FS, path string, sinks ...sink.Sink) (*Router, error) {
 			}
 		}
 		for _, name := range rule.Sinks {
-			if _, ok := router.sinks[name]; !ok {
+			if _, ok := outputs[name]; !ok {
 				return nil, fmt.Errorf("route %q references unknown sink %q", rule.Name, name)
 			}
 		}
 	}
-	return router, nil
+	return config.Routes, nil
+}
+
+func (r *Router) Reload(source fs.FS, filePath string) error {
+	rules, err := r.PrepareRules(source, filePath)
+	if err != nil {
+		return err
+	}
+	r.ReplaceRules(rules)
+	return nil
+}
+
+func (r *Router) PrepareRules(source fs.FS, filePath string) ([]Rule, error) {
+	return ReadRules(source, filePath, r.sinks)
+}
+
+func (r *Router) ReplaceRules(rules []Rule) {
+	r.mu.Lock()
+	r.rules = append([]Rule(nil), rules...)
+	r.mu.Unlock()
 }
 
 func (r *Router) Route(ctx context.Context, value event.Event) error {
+	r.mu.RLock()
+	rules := append([]Rule(nil), r.rules...)
+	r.mu.RUnlock()
 	delivered := map[string]struct{}{}
-	for _, rule := range r.rules {
+	for _, rule := range rules {
 		if !matches(rule.Match.Names, value.Name) || !matchesOptional(rule.Match.Equipment, value.EquipmentID) {
 			continue
 		}
@@ -95,6 +126,8 @@ func (r *Router) Route(ctx context.Context, value event.Event) error {
 	return nil
 }
 func (r *Router) Rules() []Rule {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	result := make([]Rule, len(r.rules))
 	copy(result, r.rules)
 	return result

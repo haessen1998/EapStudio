@@ -47,3 +47,21 @@ func TestEngineMatchesEventAndEquipmentGlobsAdditively(t *testing.T) {
 		t.Fatalf("AOI-02 commands = %d, want 1", got)
 	}
 }
+
+func TestReloadReplacesAutomationRules(t *testing.T) {
+	source := fstest.MapFS{"automations.yaml": {Data: []byte("automations:\n  - name: before\n    trigger: wafer.started\n    command: send.recipe\n")}}
+	engine, err := Load(source, "automations.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	source["automations.yaml"] = &fstest.MapFile{Data: []byte("automations:\n  - name: after\n    trigger: alarm.raised\n    command: clear.alarm\n")}
+	if err := engine.Reload(source, "automations.yaml"); err != nil {
+		t.Fatal(err)
+	}
+	if got := len(engine.Handle(event.Event{ID: "old", Type: domain.TypeEvent, Name: "wafer.started"})); got != 0 {
+		t.Fatalf("old rule still active: %d commands", got)
+	}
+	if got := len(engine.Handle(event.Event{ID: "new", Type: domain.TypeEvent, Name: "alarm.raised"})); got != 1 {
+		t.Fatalf("new rule commands = %d", got)
+	}
+}

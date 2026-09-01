@@ -40,3 +40,21 @@ func TestRouteCombinesWildcardAndSpecificEquipmentRulesWithoutDuplicateSink(t *t
 		t.Fatalf("exact deliveries = %d, want 1", got)
 	}
 }
+
+func TestReloadReplacesRulesWithoutReplacingSinks(t *testing.T) {
+	source := fstest.MapFS{"routes.yaml": {Data: []byte("routes:\n  - name: first\n    match: { names: [wafer.*] }\n    sinks: [out]\n")}}
+	output := sink.NewMemory("out")
+	router, err := Load(source, "routes.yaml", output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source["routes.yaml"] = &fstest.MapFile{Data: []byte("routes:\n  - name: second\n    match: { names: [alarm.*] }\n    sinks: [out]\n")}
+	if err := router.Reload(source, "routes.yaml"); err != nil {
+		t.Fatal(err)
+	}
+	_ = router.Route(context.Background(), event.Event{ID: "old", Name: "wafer.started"})
+	_ = router.Route(context.Background(), event.Event{ID: "new", Name: "alarm.raised"})
+	if deliveries := output.Deliveries(); len(deliveries) != 1 || deliveries[0].EventID != "new" {
+		t.Fatalf("deliveries = %#v", deliveries)
+	}
+}

@@ -26,3 +26,31 @@ devices:
       host: 127.0.0.1
       port: 5002
       sessionId: 0
+
+  - id: AOI-01
+    badge: AOI
+    name: AOI Inspection #1
+    profile: profiles/demo/aoi-v200.yaml
+    adapter: generic-gem
+    driver: simulator
+    autoConnect: true
+    connection:
+      protocol: hsms-ss
+      mode: active
+      host: 127.0.0.1
+      port: 5101
+      sessionId: 0
+
+  - id: OVEN-01
+    badge: OVN
+    name: Thermal Oven #1
+    profile: profiles/demo/oven-t300.yaml
+    adapter: generic-gem
+    driver: simulator
+    autoConnect: true
+    connection:
+      protocol: hsms-ss
+      mode: active
+      host: 127.0.0.1
+      port: 5201
+      sessionId: 0

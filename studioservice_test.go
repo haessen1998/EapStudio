@@ -8,7 +8,19 @@ import (
 	"time"
 
 	"eapstudio/internal/ai"
+	"eapstudio/internal/device"
 )
+
+func snapshotDevice(t *testing.T, service *StudioService, id string) device.Snapshot {
+	t.Helper()
+	for _, value := range service.Snapshot().Devices {
+		if value.ID == id {
+			return value
+		}
+	}
+	t.Fatalf("device %s not found", id)
+	return device.Snapshot{}
+}
 
 func TestConfigureAIKeepsAPIKeyInBackendOnly(t *testing.T) {
 	service, err := newStudioService(os.DirFS("."), t.TempDir()+"/eapstudio-test.db")
@@ -40,7 +52,15 @@ func TestDemoPipelineRunsForTwoDevices(t *testing.T) {
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		snapshot := service.Snapshot()
-		if len(snapshot.Devices) == 2 && len(snapshot.Deliveries) >= 8 && len(snapshot.Devices[0].Commands) > 0 && len(snapshot.Devices[1].Commands) > 0 {
+		if len(snapshot.Devices) == 4 && len(snapshot.Deliveries) >= 16 {
+			ready := true
+			for _, value := range snapshot.Devices {
+				ready = ready && len(value.Commands) > 0
+			}
+			if !ready {
+				time.Sleep(25 * time.Millisecond)
+				continue
+			}
 			for _, device := range snapshot.Devices {
 				if device.State != "selected" {
 					t.Fatalf("device %s state = %s", device.ID, device.State)
@@ -85,7 +105,7 @@ func TestSimulatorSupportsAlarmAndArbitraryOutboundMessages(t *testing.T) {
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
 		snapshot := service.Snapshot()
-		device := snapshot.Devices[0]
+		device := snapshotDevice(t, service, "ETCHER-01")
 		seen := map[string]bool{}
 		for _, message := range device.Messages {
 			seen[message.Name()] = true
@@ -114,27 +134,27 @@ func TestCopilotCommandRequiresExplicitPermission(t *testing.T) {
 	}
 	defer service.DisconnectDevice("ETCHER-01")
 
-	request := service.AskCopilot("请发送命令", "ETCHER-01")
+	request := service.AskCopilot("请发送命令", "ETCHER-01", nil)
 	if request.Permission == nil || request.Permission.Command != "send.recipe" {
 		t.Fatalf("permission = %#v", request.Permission)
 	}
 	denied := service.ResolveAIAction(request.Permission.ID, false)
-	if !strings.Contains(denied.Answer, "拒绝") || len(service.Snapshot().Devices[0].Commands) != 0 {
-		t.Fatalf("denied reply=%#v commands=%#v", denied, service.Snapshot().Devices[0].Commands)
+	if !strings.Contains(denied.Answer, "拒绝") || len(snapshotDevice(t, service, "ETCHER-01").Commands) != 0 {
+		t.Fatalf("denied reply=%#v commands=%#v", denied, snapshotDevice(t, service, "ETCHER-01").Commands)
 	}
 
-	request = service.AskCopilot("请下发命令", "ETCHER-01")
+	request = service.AskCopilot("请下发命令", "ETCHER-01", nil)
 	allowed := service.ResolveAIAction(request.Permission.ID, true)
 	if !strings.Contains(allowed.Answer, "已授权") {
 		t.Fatalf("allowed reply = %#v", allowed)
 	}
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
-		commands := service.Snapshot().Devices[0].Commands
+		commands := snapshotDevice(t, service, "ETCHER-01").Commands
 		if len(commands) == 1 && commands[0].Status == "succeeded" {
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	t.Fatalf("approved command did not complete: %#v", service.Snapshot().Devices[0].Commands)
+	t.Fatalf("approved command did not complete: %#v", snapshotDevice(t, service, "ETCHER-01").Commands)
 }
