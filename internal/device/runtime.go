@@ -290,6 +290,16 @@ func (r *Runtime) startSimulator() {
 		case <-timer.C:
 			_ = r.EmitScenario(names[0])
 		}
+		if _, ok := r.profile.Spec.Simulator.Scenarios["alarm-raised"]; ok {
+			alarmTimer := time.NewTimer(650 * time.Millisecond)
+			select {
+			case <-ctx.Done():
+				alarmTimer.Stop()
+				return
+			case <-alarmTimer.C:
+				_ = r.EmitScenario("alarm-raised")
+			}
+		}
 		ticker := time.NewTicker(12 * time.Second)
 		defer ticker.Stop()
 		index := 1
@@ -348,6 +358,12 @@ func (r *Runtime) stateChanged(state driver.ConnectionState, detail string) {
 	r.changed()
 }
 func (r *Runtime) recordMessage(value driver.Message) {
+	if err := driver.PopulateRawHex(&value); err != nil {
+		if value.Metadata == nil {
+			value.Metadata = map[string]string{}
+		}
+		value.Metadata["rawEncodingError"] = err.Error()
+	}
 	r.mu.Lock()
 	r.messages = append(r.messages, value)
 	if len(r.messages) > 100 {

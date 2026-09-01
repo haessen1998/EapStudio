@@ -2,7 +2,7 @@ import { CSSProperties, DragEvent as ReactDragEvent, FormEvent, PointerEvent as 
 import {
   Activity, BellRing, Bot, Boxes, Cable, ChevronRight, CircleGauge, Cpu, Database, FlaskConical,
   Code2, GitBranch, GripVertical, MessageSquareText, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, Play, PlugZap, Radio, RefreshCw, Route, Server,
-  Search, Settings2, ShieldCheck, ShieldX, Sparkles, Unplug, Waves,
+  Plus, Search, Settings2, ShieldCheck, ShieldX, Sparkles, Trash2, Unplug, Waves,
 } from "lucide-react"
 import { Events } from "@wailsio/runtime"
 import { StudioService, type StudioSnapshot } from "../bindings/eapstudio"
@@ -21,6 +21,8 @@ type CanonicalEvent = NonNullable<Device["events"]>[number]
 type EquipmentCommand = NonNullable<Device["commands"]>[number]
 type AlarmRecord = NonNullable<StudioSnapshot["alarms"]>[number]
 type PermissionRequest = NonNullable<Awaited<ReturnType<typeof StudioService.AskCopilot>>["permission"]>
+type PageSize = 25 | 50 | 100 | 200
+type AIProfile = { id: string; name: string; provider: "local" | "responses" | "chat"; baseURL: string; model: string }
 type Page = "overview" | "devices" | "messages" | "events" | "alarms" | "router" | "simulator" | "settings"
 
 const navItems: { id: Page; label: string; icon: typeof Activity }[] = [
@@ -34,6 +36,39 @@ const navItems: { id: Page; label: string; icon: typeof Activity }[] = [
 ]
 
 const emptySnapshot: StudioSnapshot = { devices: [], routes: [], deliveries: [], automations: [], alarms: [], storage: { traceCount: 0, eventCount: 0, commandCount: 0, alarmCount: 0, droppedTrace: 0 }, generated: new Date().toISOString() }
+const pageSizes: PageSize[] = [25, 50, 100, 200]
+
+function loadPageSize(): PageSize {
+  const value = Number(localStorage.getItem("eapstudio.pageSize"))
+  return pageSizes.includes(value as PageSize) ? value as PageSize : 25
+}
+
+function initialAIProfiles(): AIProfile[] {
+  const baseURL = localStorage.getItem("eapstudio.ai.baseURL") ?? "https://api.openai.com/v1"
+  const model = localStorage.getItem("eapstudio.ai.model") ?? ""
+  return [
+    { id: "local", name: "Local grounded", provider: "local", baseURL: "", model: "" },
+    { id: "responses", name: "OpenAI Responses", provider: "responses", baseURL, model },
+    { id: "chat", name: "Chat compatible", provider: "chat", baseURL, model },
+  ]
+}
+
+function loadAIProfiles(): AIProfile[] {
+  try {
+    const value = JSON.parse(localStorage.getItem("eapstudio.ai.profiles") ?? "[]")
+    if (!Array.isArray(value) || !value.length) return initialAIProfiles()
+    const profiles = value.filter((item): item is AIProfile => item && typeof item.id === "string" && typeof item.name === "string" && ["local", "responses", "chat"].includes(item.provider))
+    return profiles.length ? profiles : initialAIProfiles()
+  } catch {
+    return initialAIProfiles()
+  }
+}
+
+function loadDefaultAIID(profiles: AIProfile[]) {
+  const legacy = localStorage.getItem("eapstudio.ai.provider") ?? "local"
+  const stored = localStorage.getItem("eapstudio.ai.defaultID") ?? legacy
+  return profiles.some((profile) => profile.id === stored) ? stored : profiles[0].id
+}
 
 function loadDeviceOrder() {
   try {
@@ -60,6 +95,7 @@ function App() {
   const [rightWidth, setRightWidth] = useState(() => Number(localStorage.getItem("eapstudio.rightWidth")) || 360)
   const [leftCollapsed, setLeftCollapsed] = useState(false)
   const [rightCollapsed, setRightCollapsed] = useState(false)
+  const [pageSize, setPageSize] = useState<PageSize>(loadPageSize)
   const [deviceOrder, setDeviceOrder] = useState<string[]>(loadDeviceOrder)
   const [draggedDeviceID, setDraggedDeviceID] = useState("")
 
@@ -80,7 +116,9 @@ function App() {
 
   useEffect(() => {
     document.documentElement.dataset.theme = localStorage.getItem("eapstudio.theme") ?? "dark"
-    StudioService.ConfigureAI({ provider: localStorage.getItem("eapstudio.ai.provider") ?? "local", baseURL: localStorage.getItem("eapstudio.ai.baseURL") ?? "", model: localStorage.getItem("eapstudio.ai.model") ?? "" }).catch(() => undefined)
+    const profiles = loadAIProfiles()
+    const active = profiles.find((profile) => profile.id === loadDefaultAIID(profiles)) ?? profiles[0]
+    StudioService.ConfigureAI({ provider: active.provider, baseURL: active.baseURL, model: active.model }).catch(() => undefined)
     refresh()
     const cancel = Events.On("studio:snapshot-changed", (event) => setSnapshot(event.data as StudioSnapshot))
     return () => cancel()
@@ -89,6 +127,7 @@ function App() {
   useEffect(() => { localStorage.setItem("eapstudio.leftWidth", String(leftWidth)) }, [leftWidth])
   useEffect(() => { localStorage.setItem("eapstudio.rightWidth", String(rightWidth)) }, [rightWidth])
   useEffect(() => { localStorage.setItem("eapstudio.deviceOrder", JSON.stringify(deviceOrder)) }, [deviceOrder])
+  useEffect(() => { localStorage.setItem("eapstudio.pageSize", String(pageSize)) }, [pageSize])
 
   useEffect(() => {
     const ids = rawDevices.map((device) => device.id)
@@ -122,7 +161,7 @@ function App() {
     window.addEventListener("pointerup", stop)
   }
 
-  const shellStyle = { "--left-width": `${leftCollapsed ? 58 : leftWidth}px`, "--right-width": `${rightCollapsed ? 52 : rightWidth}px` } as CSSProperties
+  const shellStyle = { "--left-width": `${leftCollapsed ? 58 : leftWidth}px`, "--right-handle-width": `${rightCollapsed ? 0 : 5}px`, "--right-width": `${rightCollapsed ? 0 : rightWidth}px` } as CSSProperties
 
   const dropDevice = (targetID: string, event: ReactDragEvent) => {
     event.preventDefault()
@@ -181,12 +220,12 @@ function App() {
         <section className="content-pane">
             {page === "overview" && <Overview devices={devices} messages={visibleMessages} events={visibleEvents} alarmCount={visibleAlarms.filter((alarm) => alarm.state === "active").length} storage={snapshot.storage} onOpen={(id) => { setSelectedDeviceID(id); setPage("devices") }} />}
             {page === "devices" && selectedDevice && <DeviceDetail device={selectedDevice} onConnect={() => invoke(() => StudioService.ConnectDevice(selectedDevice.id))} onDisconnect={() => invoke(() => StudioService.DisconnectDevice(selectedDevice.id))} onEmit={(scenario) => invoke(() => StudioService.EmitSimulatorScenario(selectedDevice.id, scenario))} />}
-            {page === "messages" && <Messages messages={visibleMessages} selected={selectedMessage} onSelect={setSelectedMessage} />}
-            {page === "events" && <EventsPage events={visibleEvents} />}
-            {page === "alarms" && <AlarmsPage alarms={visibleAlarms} />}
+            {page === "messages" && <Messages messages={visibleMessages} selected={selectedMessage} pageSize={pageSize} onSelect={setSelectedMessage} />}
+            {page === "events" && <EventsPage events={visibleEvents} pageSize={pageSize} />}
+            {page === "alarms" && <AlarmsPage alarms={visibleAlarms} pageSize={pageSize} />}
             {page === "router" && <RouterPage snapshot={snapshot} query={normalizedQuery} />}
             {page === "simulator" && <Simulator devices={devices} onEmit={(id, scenario) => invoke(() => StudioService.EmitSimulatorScenario(id, scenario))} />}
-            {page === "settings" && <SettingsPage devices={devices} />}
+            {page === "settings" && <SettingsPage devices={devices} pageSize={pageSize} onPageSizeChange={setPageSize} />}
         </section>
       </main>
       <ResizeHandle side="right" hidden={rightCollapsed} onPointerDown={(event) => beginResize("right", event)} onDoubleClick={() => setRightCollapsed(true)} />
@@ -233,13 +272,16 @@ function DeviceDetail({ device, onConnect, onDisconnect, onEmit }: { device: Dev
 
 function InfoCard({ label, value, sub, icon: Icon }: { label: string; value: string; sub: string; icon: typeof Cable }) { return <Card><CardContent className="flex gap-3 p-4"><div className="rounded-lg bg-primary/10 p-2 text-primary"><Icon className="size-4" /></div><div><p className="text-[10px] uppercase tracking-wider text-muted-foreground">{label}</p><p className="mt-1 text-sm font-medium">{value}</p><p className="text-[10px] text-muted-foreground">{sub}</p></div></CardContent></Card> }
 
-function Messages({ messages, selected, onSelect }: { messages: SecsMessage[]; selected: SecsMessage | null; onSelect: (message: SecsMessage) => void }) {
+function Messages({ messages, selected, pageSize, onSelect }: { messages: SecsMessage[]; selected: SecsMessage | null; pageSize: PageSize; onSelect: (message: SecsMessage) => void }) {
   const [direction, setDirection] = useState("ALL")
+  const [equipment, setEquipment] = useState("ALL")
   const [view, setView] = useState<"sml" | "tree" | "raw">("sml")
   const [page, setPage] = useState(1)
-  const filtered = messages.filter((message) => direction === "ALL" || message.direction === direction)
-  const pageItems = paginate(filtered, page, 25)
-  return <div className="split-inspector"><div className="message-list"><div className="panel-heading"><div><h3>Message trace</h3><p>{filtered.length} messages from all runtimes</p></div><select className="filter-select" value={direction} onChange={(event) => { setDirection(event.target.value); setPage(1) }}><option>ALL</option><option>IN</option><option>OUT</option></select></div><div className="message-page">{pageItems.map((message) => <button key={`${message.id}-${message.direction}`} className={cn("message-row", selected?.id === message.id && selected.direction === message.direction && "message-row-active")} onClick={() => onSelect(message)}><Badge variant={message.direction === "IN" ? "success" : "default"}>{message.direction}</Badge><span className="font-mono text-xs font-semibold">S{message.stream}F{message.function}{message.wait ? " W" : ""}</span><span className="ml-auto text-[10px] text-muted-foreground">{formatTime(message.timestamp)}</span><span className="w-full truncate text-left text-[10px] text-muted-foreground">{message.equipmentId} · system {message.systemBytes}</span></button>)}</div><Pager page={page} total={filtered.length} pageSize={25} onChange={setPage}/></div><div className="inspector-panel">{selected ? <><div className="panel-heading"><div><h3>S{selected.stream}F{selected.function}{selected.wait ? " W" : ""}</h3><p>{selected.equipmentId} · {selected.direction} · {formatTime(selected.timestamp)}</p></div><Badge variant="outline">SECS-II</Badge></div><div className="tab-strip">{(["sml", "tree", "raw"] as const).map((tab) => <button key={tab} className={view === tab ? "tab-active" : ""} onClick={() => setView(tab)}>{tab.toUpperCase()}</button>)}</div>{view === "sml" && <pre className="sml-view">{selected.sml || "<EMPTY>"}</pre>}{view === "tree" && <MessageTree value={selected.tree || selected.sml}/>} {view === "raw" && <RawInspector hex={selected.rawHex}/>}</> : <div className="empty-panel">Select a message to inspect it.</div>}</div></div>
+  const equipmentIDs = [...new Set(messages.map((message) => message.equipmentId))]
+  const filtered = messages.filter((message) => (direction === "ALL" || message.direction === direction) && (equipment === "ALL" || message.equipmentId === equipment))
+  const pageItems = paginate(filtered, page, pageSize)
+  useEffect(() => setPage(1), [pageSize])
+  return <div className="split-inspector"><div className="message-list"><div className="panel-heading"><div><h3>Message trace</h3><p>{filtered.length} messages from all runtimes</p></div><div className="filter-bar"><select className="filter-select" value={equipment} onChange={(event) => { setEquipment(event.target.value); setPage(1) }}><option value="ALL">ALL EQUIPMENT</option>{equipmentIDs.map((id) => <option key={id}>{id}</option>)}</select><select className="filter-select" value={direction} onChange={(event) => { setDirection(event.target.value); setPage(1) }}><option>ALL</option><option>IN</option><option>OUT</option></select></div></div><div className="message-page">{pageItems.map((message) => <button key={`${message.id}-${message.direction}`} className={cn("message-row", selected?.id === message.id && selected.direction === message.direction && "message-row-active")} onClick={() => onSelect(message)}><Badge variant={message.direction === "IN" ? "success" : "default"}>{message.direction}</Badge><span className="font-mono text-xs font-semibold">S{message.stream}F{message.function}{message.wait ? " W" : ""}</span><span className="ml-auto text-[10px] text-muted-foreground">{formatTime(message.timestamp)}</span><span className="w-full truncate text-left text-[10px] text-muted-foreground">{message.equipmentId} · system {message.systemBytes}</span></button>)}</div><Pager page={page} total={filtered.length} pageSize={pageSize} onChange={setPage}/></div><div className="inspector-panel">{selected ? <><div className="panel-heading"><div><h3>S{selected.stream}F{selected.function}{selected.wait ? " W" : ""}</h3><p>{selected.equipmentId} · {selected.direction} · {formatTime(selected.timestamp)}</p></div><Badge variant="outline">SECS-II</Badge></div><div className="tab-strip">{(["sml", "tree", "raw"] as const).map((tab) => <button key={tab} className={view === tab ? "tab-active" : ""} onClick={() => setView(tab)}>{tab.toUpperCase()}</button>)}</div>{view === "sml" && <pre className="sml-view">{selected.sml || "<EMPTY>"}</pre>}{view === "tree" && <MessageTree value={selected.tree || selected.sml}/>} {view === "raw" && <RawInspector hex={selected.rawHex}/>}</> : <div className="empty-panel">Select a message to inspect it.</div>}</div></div>
 }
 
 function MessageTree({ value }: { value: string }) {
@@ -254,12 +296,15 @@ function RawInspector({ hex }: { hex?: string }) {
   return <div className="hex-view">{rows.map((row, index) => <div className="hex-row" key={index}><span>{(index * 16).toString(16).padStart(6, "0")}</span><code>{row.join(" ").padEnd(47, " ")}</code><b>{row.map((item) => { const value = Number.parseInt(item, 16); return value >= 32 && value <= 126 ? String.fromCharCode(value) : "." }).join("")}</b></div>)}</div>
 }
 
-function EventsPage({ events }: { events: CanonicalEvent[] }) {
+function EventsPage({ events, pageSize }: { events: CanonicalEvent[]; pageSize: PageSize }) {
   const names = [...new Set(events.map((event) => event.name))]
+  const equipmentIDs = [...new Set(events.map((event) => event.equipmentId))]
   const [name, setName] = useState("ALL")
+  const [equipment, setEquipment] = useState("ALL")
   const [page, setPage] = useState(1)
-  const filtered = events.filter((event) => name === "ALL" || event.name === name)
-  return <div className="page-stack"><div className="section-heading !mt-0"><div><h3>Canonical events</h3><p>SECS/GEM semantics normalized for downstream consumers.</p></div><div className="filter-bar"><select className="filter-select" value={name} onChange={(event) => { setName(event.target.value); setPage(1) }}><option>ALL</option>{names.map((item) => <option key={item}>{item}</option>)}</select><Badge>{filtered.length} events</Badge></div></div><EventCards events={paginate(filtered, page, 25)} /><Pager page={page} total={filtered.length} pageSize={25} onChange={setPage}/></div>
+  const filtered = events.filter((event) => (name === "ALL" || event.name === name) && (equipment === "ALL" || event.equipmentId === equipment))
+  useEffect(() => setPage(1), [pageSize])
+  return <div className="page-stack"><div className="section-heading !mt-0"><div><h3>Canonical events</h3><p>SECS/GEM semantics normalized for downstream consumers.</p></div><div className="filter-bar"><select className="filter-select" value={equipment} onChange={(event) => { setEquipment(event.target.value); setPage(1) }}><option value="ALL">ALL EQUIPMENT</option>{equipmentIDs.map((id) => <option key={id}>{id}</option>)}</select><select className="filter-select" value={name} onChange={(event) => { setName(event.target.value); setPage(1) }}><option>ALL</option>{names.map((item) => <option key={item}>{item}</option>)}</select><Badge>{filtered.length} events</Badge></div></div><EventCards events={paginate(filtered, page, pageSize)} /><Pager page={page} total={filtered.length} pageSize={pageSize} onChange={setPage}/></div>
 }
 function EventCards({ events }: { events: CanonicalEvent[] }) { return <div className="space-y-2">{events.length ? events.map((event) => <Card key={event.id} className="event-card"><CardContent className="flex items-start gap-3 p-4"><div className="event-icon"><Waves className="size-4" /></div><div className="min-w-0 flex-1"><div className="flex items-center gap-2"><Badge>event</Badge><span className="text-sm font-medium">{event.name}</span>{event.source.ceid ? <Badge variant="outline">CEID {event.source.ceid}</Badge> : null}<span className="ml-auto text-[10px] text-muted-foreground">{formatTime(event.timestamp)}</span></div><p className="mt-1 text-[11px] text-muted-foreground">{event.equipmentId} · correlation {event.correlationId} · caused by {event.causationId}</p><pre className="event-json">{JSON.stringify(event.data, null, 2)}</pre></div></CardContent></Card>) : <div className="empty-panel">No canonical events yet.</div>}</div> }
 
@@ -273,30 +318,67 @@ function RouterPage({ snapshot, query }: { snapshot: StudioSnapshot; query: stri
 
 function Simulator({ devices, onEmit }: { devices: Device[]; onEmit: (id: string, scenario: string) => void }) { return <div className="page-stack"><div className="simulator-hero"><div className="simulator-rings"><Radio className="size-7" /></div><div><h2>Profile-driven Equipment Simulator</h2><p>Scenarios can reverse-map canonical events into S6F11, or declare arbitrary inbound/outbound SxFy templates such as S5F1, S2F41 and S7F3.</p></div></div><div className="grid grid-cols-2 gap-3">{devices.map((device) => <Card key={device.id}><CardHeader><div className="flex items-center justify-between"><CardTitle>{device.id}</CardTitle><Badge variant="success">simulator</Badge></div><CardDescription>{device.model} · {(device.scenarios ?? []).length} declared scenarios</CardDescription></CardHeader><CardContent><div className="space-y-2">{(device.scenarios ?? []).map((scenario) => <div className="scenario-row" key={scenario.id}><div><p>{scenario.displayName}</p><span>{scenario.event ? `${scenario.event} → Profile → S6F11` : `${scenario.direction.toUpperCase()} · S${scenario.stream}F${scenario.function}`}</span></div><Button size="sm" onClick={() => onEmit(device.id, scenario.id)}><Play className="size-3.5" />Emit</Button></div>)}</div></CardContent></Card>)}</div></div> }
 
-function AlarmsPage({ alarms }: { alarms: AlarmRecord[] }) {
+function AlarmsPage({ alarms, pageSize }: { alarms: AlarmRecord[]; pageSize: PageSize }) {
   const [state, setState] = useState("ALL")
   const [severity, setSeverity] = useState("ALL")
+  const [equipment, setEquipment] = useState("ALL")
+  const [alarmID, setAlarmID] = useState("ALL")
   const [page, setPage] = useState(1)
-  const filtered = alarms.filter((alarm) => (state === "ALL" || alarm.state === state) && (severity === "ALL" || alarm.severity === severity))
-  return <div className="page-stack"><div className="section-heading !mt-0"><div><h3>Equipment alarms</h3><p>S5F1 alarm reports projected from the immutable event history.</p></div><div className="filter-bar"><select className="filter-select" value={state} onChange={(event) => { setState(event.target.value); setPage(1) }}><option>ALL</option><option value="active">ACTIVE</option><option value="cleared">CLEARED</option></select><select className="filter-select" value={severity} onChange={(event) => { setSeverity(event.target.value); setPage(1) }}><option>ALL</option><option value="critical">CRITICAL</option><option value="warning">WARNING</option><option value="info">INFO</option></select></div></div><div className="table-shell"><table><thead><tr><th>State</th><th>Alarm</th><th>Equipment</th><th>Severity</th><th>Raised</th><th>Cleared</th></tr></thead><tbody>{paginate(filtered, page, 25).map((alarm) => <tr key={`${alarm.equipmentId}-${alarm.alarmId}`}><td><Badge variant={alarm.state === "active" ? "warning" : "outline"}>{alarm.state}</Badge></td><td><div className="font-medium">{alarm.alarmId} · {alarm.text}</div><div className="text-[9px] text-muted-foreground">code {alarm.code} · {alarm.correlationId}</div></td><td>{alarm.equipmentId}</td><td>{alarm.severity}</td><td>{formatTime(alarm.raisedAt)}</td><td>{alarm.clearedAt ? formatTime(alarm.clearedAt) : "—"}</td></tr>)}</tbody></table>{filtered.length === 0 && <div className="empty-panel !min-h-32">No alarms match the current filters.</div>}</div><Pager page={page} total={filtered.length} pageSize={25} onChange={setPage}/></div>
+  const equipmentIDs = [...new Set(alarms.map((alarm) => alarm.equipmentId))]
+  const alarmIDs = [...new Set(alarms.map((alarm) => alarm.alarmId))]
+  const filtered = alarms.filter((alarm) => (state === "ALL" || alarm.state === state) && (severity === "ALL" || alarm.severity === severity) && (equipment === "ALL" || alarm.equipmentId === equipment) && (alarmID === "ALL" || alarm.alarmId === alarmID))
+  const active = alarms.filter((alarm) => alarm.state === "active").length
+  const critical = alarms.filter((alarm) => alarm.state === "active" && alarm.severity === "critical").length
+  useEffect(() => setPage(1), [pageSize])
+  return <div className="page-stack"><div className="section-heading !mt-0"><div><h3>Equipment alarms</h3><p>S5F1 alarm reports projected from the immutable event history.</p></div><div className="filter-bar"><select className="filter-select" value={equipment} onChange={(event) => { setEquipment(event.target.value); setPage(1) }}><option value="ALL">ALL EQUIPMENT</option>{equipmentIDs.map((id) => <option key={id}>{id}</option>)}</select><select className="filter-select" value={alarmID} onChange={(event) => { setAlarmID(event.target.value); setPage(1) }}><option value="ALL">ALL ALARMS</option>{alarmIDs.map((id) => <option key={id}>{id}</option>)}</select><select className="filter-select" value={state} onChange={(event) => { setState(event.target.value); setPage(1) }}><option>ALL</option><option value="active">ACTIVE</option><option value="cleared">CLEARED</option></select><select className="filter-select" value={severity} onChange={(event) => { setSeverity(event.target.value); setPage(1) }}><option>ALL</option><option value="critical">CRITICAL</option><option value="warning">WARNING</option><option value="info">INFO</option></select></div></div><div className="alarm-summary"><div><span>Active</span><b>{active}</b></div><div><span>Critical</span><b>{critical}</b></div><div><span>History</span><b>{alarms.length}</b></div><div><span>Visible</span><b>{filtered.length}</b></div></div><div className="table-shell"><table><thead><tr><th>State</th><th>Alarm</th><th>Equipment</th><th>Severity</th><th>Raised</th><th>Cleared</th></tr></thead><tbody>{paginate(filtered, page, pageSize).map((alarm) => <tr key={`${alarm.equipmentId}-${alarm.alarmId}`}><td><Badge variant={alarm.state === "active" ? "warning" : "outline"}>{alarm.state}</Badge></td><td><div className="font-medium">{alarm.alarmId} · {alarm.text}</div><div className="text-[9px] text-muted-foreground">code {alarm.code} · {alarm.correlationId}</div></td><td>{alarm.equipmentId}</td><td>{alarm.severity}</td><td>{formatTime(alarm.raisedAt)}</td><td>{alarm.clearedAt ? formatTime(alarm.clearedAt) : "—"}</td></tr>)}</tbody></table>{filtered.length === 0 && <div className="empty-panel !min-h-32">No alarms match the current filters.</div>}</div><Pager page={page} total={filtered.length} pageSize={pageSize} onChange={setPage}/></div>
 }
 
-function SettingsPage({ devices }: { devices: Device[] }) {
+function SettingsPage({ devices, pageSize, onPageSizeChange }: { devices: Device[]; pageSize: PageSize; onPageSizeChange: (value: PageSize) => void }) {
   const [theme, setTheme] = useState(() => localStorage.getItem("eapstudio.theme") ?? "dark")
-  const [provider, setProvider] = useState(() => localStorage.getItem("eapstudio.ai.provider") ?? "local")
-  const [model, setModel] = useState(() => localStorage.getItem("eapstudio.ai.model") ?? "")
-  const [baseURL, setBaseURL] = useState(() => localStorage.getItem("eapstudio.ai.baseURL") ?? "")
+  const [profiles, setProfiles] = useState<AIProfile[]>(loadAIProfiles)
+  const [defaultAIID, setDefaultAIID] = useState(() => loadDefaultAIID(loadAIProfiles()))
+  const [selectedAIID, setSelectedAIID] = useState(() => loadDefaultAIID(loadAIProfiles()))
+  const [saved, setSaved] = useState(false)
+  const selectedAI = profiles.find((profile) => profile.id === selectedAIID) ?? profiles[0]
   useEffect(() => {
     localStorage.setItem("eapstudio.theme", theme)
     document.documentElement.dataset.theme = theme
   }, [theme])
-  const saveAI = async () => {
-    localStorage.setItem("eapstudio.ai.provider", provider)
-    localStorage.setItem("eapstudio.ai.model", model)
-    localStorage.setItem("eapstudio.ai.baseURL", baseURL)
-    await StudioService.ConfigureAI({ provider, model, baseURL })
+
+  const updateAI = (field: "name" | "provider" | "baseURL" | "model", value: string) => {
+    setSaved(false)
+    setProfiles((current) => current.map((profile) => profile.id === selectedAIID ? { ...profile, [field]: value } as AIProfile : profile))
   }
-  return <div className="page-stack settings-page"><div className="section-heading !mt-0"><div><h3>Studio settings</h3><p>Appearance, AI provider, and the equipment inventory for this desktop runtime.</p></div><Badge variant="outline">{devices.length} configured devices</Badge></div><div className="settings-grid"><Card><CardHeader><CardTitle>Appearance</CardTitle><CardDescription>Choose the interface color scheme.</CardDescription></CardHeader><CardContent className="settings-form"><label>Theme<select value={theme} onChange={(event) => setTheme(event.target.value)}><option value="dark">Dark</option><option value="light">Light</option><option value="system">System</option></select></label></CardContent></Card><Card><CardHeader><CardTitle>AI provider</CardTitle><CardDescription>All equipment write actions still require explicit approval.</CardDescription></CardHeader><CardContent className="settings-form"><label>API adapter<select value={provider} onChange={(event) => setProvider(event.target.value)}><option value="local">Local grounded</option><option value="responses">Responses API</option><option value="chat">Chat Completions</option></select></label><label>Base URL<input value={baseURL} onChange={(event) => setBaseURL(event.target.value)} placeholder="https://api.openai.com/v1"/></label><label>Model<input value={model} onChange={(event) => setModel(event.target.value)} placeholder="gpt model"/></label><p>Secret: <code>EAPSTUDIO_AI_API_KEY</code></p><Button className="self-start" size="sm" onClick={saveAI}>Save AI settings</Button></CardContent></Card><Card className="settings-devices"><CardHeader><CardTitle>Equipment</CardTitle><CardDescription>Drag equipment in the left sidebar to change this display order.</CardDescription></CardHeader><CardContent className="settings-device-list">{devices.map((device, index) => <div key={device.id} className="settings-device-row"><span>{index + 1}</span><div className={cn("device-monogram", device.state === "selected" && "device-monogram-online")}>{compactDeviceLabel(device.id)}</div><div><b>{device.id}</b><p>{device.vendor} {device.model} · {device.host}:{device.port}</p></div><Badge className="ml-auto" variant={device.state === "selected" ? "success" : "outline"}>{device.state}</Badge></div>)}</CardContent></Card></div></div>
+
+  const addAI = () => {
+    const id = `ai-${Date.now()}`
+    setProfiles((current) => [...current, { id, name: "New AI endpoint", provider: "responses", baseURL: "https://api.openai.com/v1", model: "" }])
+    setSelectedAIID(id)
+    setSaved(false)
+  }
+
+  const removeAI = () => {
+    if (profiles.length <= 1) return
+    const remaining = profiles.filter((profile) => profile.id !== selectedAIID)
+    const nextDefault = defaultAIID === selectedAIID ? remaining[0].id : defaultAIID
+    setProfiles(remaining)
+    setDefaultAIID(nextDefault)
+    setSelectedAIID(remaining[0].id)
+    setSaved(false)
+  }
+
+  const saveAI = async () => {
+    const active = profiles.find((profile) => profile.id === defaultAIID) ?? profiles[0]
+    localStorage.setItem("eapstudio.ai.profiles", JSON.stringify(profiles))
+    localStorage.setItem("eapstudio.ai.defaultID", active.id)
+    localStorage.setItem("eapstudio.ai.provider", active.provider)
+    localStorage.setItem("eapstudio.ai.model", active.model)
+    localStorage.setItem("eapstudio.ai.baseURL", active.baseURL)
+    await StudioService.ConfigureAI({ provider: active.provider, model: active.model, baseURL: active.baseURL })
+    window.dispatchEvent(new Event("eapstudio:ai-config-changed"))
+    setSaved(true)
+  }
+  return <div className="page-stack settings-page"><div className="section-heading !mt-0"><div><h3>Studio settings</h3><p>Appearance, pagination, AI endpoints, and the equipment inventory for this desktop runtime.</p></div><Badge variant="outline">{devices.length} configured devices</Badge></div><div className="settings-grid"><Card><CardHeader><CardTitle>Interface</CardTitle><CardDescription>Appearance and list density preferences.</CardDescription></CardHeader><CardContent className="settings-form"><label>Theme<select value={theme} onChange={(event) => setTheme(event.target.value)}><option value="dark">Dark</option><option value="light">Light</option><option value="system">System</option></select></label><label>Records per page<select value={pageSize} onChange={(event) => onPageSizeChange(Number(event.target.value) as PageSize)}>{pageSizes.map((value) => <option key={value} value={value}>{value}</option>)}</select></label><p>Applied to Messages, Events, and Alarms.</p></CardContent></Card><Card><CardHeader><CardTitle>Runtime safety</CardTitle><CardDescription>AI can inspect runtime context without write access.</CardDescription></CardHeader><CardContent className="settings-form"><div className="settings-safety"><ShieldCheck className="size-5"/><div><b>Permission cards enabled</b><p>Every command requires an explicit Allow once or Deny decision.</p></div></div><p>API secrets remain in <code>EAPSTUDIO_AI_API_KEY</code>.</p></CardContent></Card><Card className="settings-ai"><CardHeader className="flex-row items-center justify-between"><div><CardTitle>AI configurations</CardTitle><CardDescription>Maintain multiple endpoints and choose one runtime default.</CardDescription></div><Button size="sm" variant="outline" onClick={addAI}><Plus className="size-3.5"/>Add AI</Button></CardHeader><CardContent className="settings-ai-layout"><div className="ai-profile-list">{profiles.map((profile) => <div key={profile.id} className={cn("ai-profile-row", selectedAIID === profile.id && "ai-profile-row-active")}><input type="radio" name="default-ai" aria-label={`Use ${profile.name} as default`} checked={defaultAIID === profile.id} onChange={() => { setDefaultAIID(profile.id); setSelectedAIID(profile.id); setSaved(false) }}/><button onClick={() => setSelectedAIID(profile.id)}><b>{profile.name}</b><span>{profile.provider} · {profile.model || "no model"}</span></button>{defaultAIID === profile.id && <Badge variant="success">default</Badge>}</div>)}</div>{selectedAI && <div className="settings-form ai-profile-editor"><div className="ai-editor-heading"><div><b>Edit configuration</b><span>{selectedAI.id}</span></div><Button size="icon" variant="outline" disabled={profiles.length <= 1} onClick={removeAI} aria-label="Delete AI configuration"><Trash2 className="size-3.5"/></Button></div><label>Name<input value={selectedAI.name} onChange={(event) => updateAI("name", event.target.value)}/></label><label>API adapter<select value={selectedAI.provider} onChange={(event) => updateAI("provider", event.target.value)}><option value="local">Local grounded</option><option value="responses">Responses API</option><option value="chat">Chat Completions</option></select></label>{selectedAI.provider !== "local" && <><label>Base URL<input value={selectedAI.baseURL} onChange={(event) => updateAI("baseURL", event.target.value)} placeholder="https://api.openai.com/v1"/></label><label>Model<input value={selectedAI.model} onChange={(event) => updateAI("model", event.target.value)} placeholder="gpt model"/></label></>}<div className="ai-save-row"><Button size="sm" onClick={saveAI}>Save list and default</Button>{saved && <Badge variant="success">saved</Badge>}</div></div>}</CardContent></Card><Card className="settings-devices"><CardHeader><CardTitle>Equipment</CardTitle><CardDescription>Drag equipment in the left sidebar to change this display order.</CardDescription></CardHeader><CardContent className="settings-device-list">{devices.map((device, index) => <div key={device.id} className="settings-device-row"><span>{index + 1}</span><div className={cn("device-monogram", device.state === "selected" && "device-monogram-online")}>{compactDeviceLabel(device.id)}</div><div><b>{device.id}</b><p>{device.vendor} {device.model} · {device.host}:{device.port}</p></div><Badge className="ml-auto" variant={device.state === "selected" ? "success" : "outline"}>{device.state}</Badge></div>)}</CardContent></Card></div></div>
 }
 
 function Copilot({ device, collapsed }: { device?: Device; collapsed: boolean }) {
@@ -305,10 +387,15 @@ function Copilot({ device, collapsed }: { device?: Device; collapsed: boolean })
   const [prompt, setPrompt] = useState("")
   const [loading, setLoading] = useState(false)
   const [provider, setProvider] = useState("local")
-  useEffect(() => { StudioService.AIConfig().then((config) => setProvider(config.provider)) }, [loading])
+  useEffect(() => {
+    const refreshProvider = () => { StudioService.AIConfig().then((config) => setProvider(config.provider)) }
+    refreshProvider()
+    window.addEventListener("eapstudio:ai-config-changed", refreshProvider)
+    return () => window.removeEventListener("eapstudio:ai-config-changed", refreshProvider)
+  }, [loading])
   const ask = async (event: FormEvent) => { event.preventDefault(); const question = prompt.trim(); if (!question || !device) return; setPrompt(""); setMessages((value) => [...value, { id: `user-${Date.now()}`, from: "user", text: question }]); setLoading(true); try { const reply = await StudioService.AskCopilot(question, device.id); setMessages((value) => [...value, { id: `assistant-${Date.now()}`, from: "assistant", text: reply.answer, evidence: reply.evidence ?? [], permission: reply.permission ?? undefined, permissionStatus: reply.permission ? "pending" : undefined }]) } finally { setLoading(false) } }
   const resolvePermission = async (messageID: string, permissionID: string, allow: boolean) => { setMessages((value) => value.map((message) => message.id === messageID ? { ...message, permissionStatus: allow ? "allowed" : "denied" } : message)); const reply = await StudioService.ResolveAIAction(permissionID, allow); setMessages((value) => [...value, { id: `assistant-${Date.now()}`, from: "assistant", text: reply.answer, evidence: reply.evidence ?? [] }]) }
-  return <aside className={cn("copilot-panel", collapsed && "copilot-collapsed")}><div className="copilot-header"><div className="copilot-icon"><Bot className="size-4" /></div><div className="copilot-label"><h3>Equipment Copilot</h3><p>Grounded in live runtime context</p></div><Badge variant="success" className="copilot-label ml-auto">{provider}</Badge></div><div className="copilot-body"><Conversation><ConversationContent>{messages.length === 0 ? <ConversationEmptyState icon={<Sparkles className="size-7 text-primary" />} title="Ask about this equipment" description="Inspect state, explain messages, trace events, or prepare a permission-gated command." /> : messages.map((message) => <AIMessage key={message.id} from={message.from}><MessageContent><MessageResponse>{message.text}</MessageResponse>{message.evidence?.length ? <Tool className="mt-3"><ToolHeader title="Runtime context"/><ToolContent>{message.evidence.join(" · ")}</ToolContent></Tool> : null}{message.permission && <PermissionCard permission={message.permission} status={message.permissionStatus ?? "pending"} onAllow={() => resolvePermission(message.id, message.permission!.id, true)} onDeny={() => resolvePermission(message.id, message.permission!.id, false)}/>}</MessageContent></AIMessage>)}</ConversationContent></Conversation><div className="suggestions">{["Explain latest message", "Trace material flow", "发送命令"].map((suggestion) => <button key={suggestion} onClick={() => setPrompt(suggestion)}>{suggestion}</button>)}</div><PromptInput className="copilot-composer" onSubmit={ask}><PromptInputTextarea value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder={`Ask about ${device?.id ?? "equipment"}…`} /><PromptInputSubmit loading={loading} /></PromptInput><p className="copilot-note">Write actions require explicit card approval.</p></div></aside>
+  return <aside aria-hidden={collapsed} className={cn("copilot-panel", collapsed && "copilot-collapsed")}><div className="copilot-header"><div className="copilot-icon"><Bot className="size-4" /></div><div className="copilot-label"><h3>Equipment Copilot</h3><p>Grounded in live runtime context</p></div><Badge variant="success" className="copilot-label ml-auto">{provider}</Badge></div><div className="copilot-body"><Conversation><ConversationContent>{messages.length === 0 ? <ConversationEmptyState icon={<Sparkles className="size-7 text-primary" />} title="Ask about this equipment" description="Inspect state, explain messages, trace events, or prepare a permission-gated command." /> : messages.map((message) => <AIMessage key={message.id} from={message.from}><MessageContent><MessageResponse>{message.text}</MessageResponse>{message.evidence?.length ? <Tool className="mt-3"><ToolHeader title="Runtime context"/><ToolContent>{message.evidence.join(" · ")}</ToolContent></Tool> : null}{message.permission && <PermissionCard permission={message.permission} status={message.permissionStatus ?? "pending"} onAllow={() => resolvePermission(message.id, message.permission!.id, true)} onDeny={() => resolvePermission(message.id, message.permission!.id, false)}/>}</MessageContent></AIMessage>)}</ConversationContent></Conversation><div className="suggestions">{["Explain latest message", "Trace material flow", "发送命令"].map((suggestion) => <button key={suggestion} onClick={() => setPrompt(suggestion)}>{suggestion}</button>)}</div><PromptInput className="copilot-composer" onSubmit={ask}><PromptInputTextarea value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder={`Ask about ${device?.id ?? "equipment"}…`} /><PromptInputSubmit loading={loading} /></PromptInput><p className="copilot-note">Write actions require explicit card approval.</p></div></aside>
 }
 
 function PermissionCard({ permission, status, onAllow, onDeny }: { permission: PermissionRequest; status: "pending" | "allowed" | "denied"; onAllow: () => void; onDeny: () => void }) {

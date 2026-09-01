@@ -74,6 +74,11 @@ func TestSimulatorSupportsAlarmAndArbitraryOutboundMessages(t *testing.T) {
 			seen[message.Name()] = true
 		}
 		if seen["S5F1"] && seen["S5F2"] && seen["S2F41"] && seen["S2F42"] && len(snapshot.Alarms) == 1 {
+			for _, message := range device.Messages {
+				if message.RawHex == "" {
+					t.Fatalf("message %s has no raw HSMS frame", message.Name())
+				}
+			}
 			return
 		}
 		time.Sleep(10 * time.Millisecond)

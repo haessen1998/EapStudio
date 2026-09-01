@@ -95,9 +95,9 @@ To connect real equipment, change a device's `driver` from `simulator` to `go-se
 
 The current Copilot is deterministic and grounded in the live runtime/Profile snapshot. `StudioService.AskCopilot` is the provider boundary for adding OpenAI or another compatible model later; credentials and model calls stay in Go, outside the frontend and protocol response path.
 
-The sidebar Settings popover can select the local assistant, an OpenAI Responses API compatible endpoint, or a Chat Completions compatible endpoint. Provider secrets are read only from `EAPSTUDIO_AI_API_KEY`. Read-only questions are answered from the selected DeviceRuntime snapshot. A write request such as sending `send.recipe` produces a typed Allow/Deny permission card; only **Allow once** submits the command to the device queue.
+The Settings page maintains a list of local, OpenAI Responses API compatible, and Chat Completions compatible configurations, with one explicit runtime default. Provider secrets are read only from `EAPSTUDIO_AI_API_KEY`. Read-only questions are answered from the selected DeviceRuntime snapshot. A write request such as sending `send.recipe` produces a typed Allow/Deny permission card; only **Allow once** submits the command to the device queue.
 
-Messages expose working SML, structured Tree, and offset/hex/ASCII Raw views. Messages, canonical events, and alarms use explicit 25-record pages rather than endless scrolling so an investigation keeps a stable position as live data arrives.
+Messages expose working SML, structured Tree, and offset/hex/ASCII Raw views; simulator SML is encoded into complete HSMS frames so Raw remains useful without physical equipment. Messages, canonical events, and alarms use the configurable 25/50/100/200-record page size and equipment filters rather than endless scrolling, so an investigation keeps a stable position as live data arrives. The demo simulator also raises an initial S5F1 alarm to populate the alarm projection and its state/severity/equipment filters.
 
 Repository-aware coding agents should follow `AGENTS.md`. It describes how to turn equipment manuals and sample logs into Profiles, model-specific Adapters when necessary, simulator scenarios, evidence-backed equipment status answers, and permission-gated commands.
 
