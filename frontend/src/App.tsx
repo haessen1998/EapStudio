@@ -713,6 +713,7 @@ function App() {
               storage={snapshot.storage}
               pageSize={pageSize}
               onPageSizeChange={setPageSize}
+              onDeviceOrderChange={(order) => setDeviceOrder(order)}
             />
           )}
         </section>
@@ -1759,7 +1760,7 @@ function RouterPage({
               <div className="route-name">
                 <Sparkles className="size-4" />
                 <div>
-                  <p>{rule.name}</p>
+                  <p title={rule.name}>{rule.name}</p>
                   <span>event → command</span>
                 </div>
               </div>
@@ -1795,7 +1796,7 @@ function RouterPage({
               <div className="route-name">
                 <GitBranch className="size-4" />
                 <div>
-                  <p>{route.name}</p>
+                  <p title={route.name}>{route.name}</p>
                   <span>event + equipment glob</span>
                 </div>
               </div>
@@ -2130,11 +2131,13 @@ function SettingsPage({
   storage,
   pageSize,
   onPageSizeChange,
+  onDeviceOrderChange,
 }: {
   devices: Device[];
   storage: StudioSnapshot["storage"];
   pageSize: PageSize;
   onPageSizeChange: (value: PageSize) => void;
+  onDeviceOrderChange: (order: string[]) => void;
 }) {
   const [theme, setTheme] = useState(
     () => localStorage.getItem("eapstudio.theme") ?? "dark",
@@ -2153,6 +2156,7 @@ function SettingsPage({
   const [selectedEquipmentKey, setSelectedEquipmentKey] = useState(
     () => devices[0]?.id ?? "",
   );
+  const [draggedEquipmentKey, setDraggedEquipmentKey] = useState("");
   const [equipmentPath, setEquipmentPath] = useState("");
   const [equipmentStatus, setEquipmentStatus] = useState("");
   const [configComparison, setConfigComparison] =
@@ -2170,6 +2174,8 @@ function SettingsPage({
     profiles.find((profile) => profile.id === selectedAIID) ?? profiles[0];
   const selectedEquipment =
     equipment.find((item) => item.key === selectedEquipmentKey) ?? equipment[0];
+  const liveDeviceOrder = devices.map((device) => device.id);
+  const liveDeviceOrderSignature = liveDeviceOrder.join("\u0000");
   useEffect(() => {
     localStorage.setItem("eapstudio.theme", theme);
     document.documentElement.dataset.theme = theme;
@@ -2189,6 +2195,20 @@ function SettingsPage({
       setSelectedEquipmentKey(drafts[0].key);
     }
   }, [devices, equipment.length]);
+  useEffect(() => {
+    const rank = new Map(liveDeviceOrder.map((id, index) => [id, index]));
+    setEquipment((current) => {
+      const known = current
+        .filter((item) => rank.has(item.key))
+        .sort((left, right) => rank.get(left.key)! - rank.get(right.key)!);
+      const drafts = current.filter((item) => !rank.has(item.key));
+      const next = [...known, ...drafts];
+      return next.map((item) => item.key).join("\u0000") ===
+        current.map((item) => item.key).join("\u0000")
+        ? current
+        : next;
+    });
+  }, [liveDeviceOrderSignature]);
 
   const updateAI = (
     field: "name" | "provider" | "baseURL" | "model" | "apiKey",
@@ -2300,6 +2320,24 @@ function SettingsPage({
     setEquipment(remaining);
     setSelectedEquipmentKey(remaining[0].key);
     setEquipmentStatus("");
+  };
+  const dropEquipment = (targetKey: string, event: ReactDragEvent) => {
+    event.preventDefault();
+    const sourceKey =
+      event.dataTransfer.getData("text/plain") || draggedEquipmentKey;
+    if (!sourceKey || sourceKey === targetKey) return;
+    const next = [...equipment];
+    const sourceIndex = next.findIndex((item) => item.key === sourceKey);
+    const targetIndex = next.findIndex((item) => item.key === targetKey);
+    if (sourceIndex < 0 || targetIndex < 0) return;
+    const [moved] = next.splice(sourceIndex, 1);
+    next.splice(targetIndex, 0, moved);
+    setEquipment(next);
+    const liveIDs = new Set(devices.map((device) => device.id));
+    onDeviceOrderChange(
+      next.map((item) => item.key).filter((key) => liveIDs.has(key)),
+    );
+    setDraggedEquipmentKey("");
   };
   const saveEquipment = async () => {
     try {
@@ -2697,10 +2735,24 @@ function SettingsPage({
                 return (
                   <button
                     key={item.key}
+                    draggable
+                    onDragStart={(event) => {
+                      event.dataTransfer.effectAllowed = "move";
+                      event.dataTransfer.setData("text/plain", item.key);
+                      setDraggedEquipmentKey(item.key);
+                    }}
+                    onDragEnd={() => setDraggedEquipmentKey("")}
+                    onDragOver={(event) => {
+                      event.preventDefault();
+                      event.dataTransfer.dropEffect = "move";
+                    }}
+                    onDrop={(event) => dropEquipment(item.key, event)}
                     className={cn(
                       "equipment-config-row",
                       selectedEquipment?.key === item.key &&
                         "equipment-config-row-active",
+                      draggedEquipmentKey === item.key &&
+                        "equipment-config-row-dragging",
                     )}
                     onClick={() => setSelectedEquipmentKey(item.key)}
                   >
@@ -2725,6 +2777,7 @@ function SettingsPage({
                     >
                       {live?.state ?? "pending"}
                     </Badge>
+                    <GripVertical className="equipment-config-drag-handle size-3.5" />
                   </button>
                 );
               })}
