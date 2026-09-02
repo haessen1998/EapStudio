@@ -88,6 +88,9 @@ type AlarmRecord = NonNullable<StudioSnapshot["alarms"]>[number];
 type PermissionRequest = NonNullable<
   Awaited<ReturnType<typeof StudioService.AskCopilot>>["permission"]
 >;
+type EquipmentActionResult = Awaited<
+  ReturnType<typeof StudioService.ResolveEquipmentAction>
+>;
 type CopilotAttachment = {
   name: string;
   mediaType: string;
@@ -916,27 +919,31 @@ function DeviceDetail({
           </p>
         </div>
         <div className="ml-auto flex gap-2">
-          <select
-            className="filter-select scenario-select"
-            value={scenario}
-            onChange={(event) => setScenario(event.target.value)}
-            aria-label="Simulator scenario"
-          >
-            {scenarios.map((item) => (
-              <option key={item.id} value={item.id}>
-                {item.displayName} ·{" "}
-                {item.event || `S${item.stream}F${item.function}`}
-              </option>
-            ))}
-          </select>
-          <Button
-            variant="outline"
-            disabled={!scenario}
-            onClick={() => scenario && onEmit(scenario)}
-          >
-            <Play className="size-4" />
-            Emit scenario
-          </Button>
+          {device.driver === "simulator" && (
+            <>
+              <select
+                className="filter-select scenario-select"
+                value={scenario}
+                onChange={(event) => setScenario(event.target.value)}
+                aria-label="Simulator scenario"
+              >
+                {scenarios.map((item) => (
+                  <option key={item.id} value={item.id}>
+                    {item.displayName} ·{" "}
+                    {item.event || `S${item.stream}F${item.function}`}
+                  </option>
+                ))}
+              </select>
+              <Button
+                variant="outline"
+                disabled={!scenario}
+                onClick={() => scenario && onEmit(scenario)}
+              >
+                <Play className="size-4" />
+                Emit inbound
+              </Button>
+            </>
+          )}
           {device.state === "selected" ? (
             <Button variant="outline" onClick={onDisconnect}>
               <Unplug className="size-4" />
@@ -970,6 +977,7 @@ function DeviceDetail({
           icon={Database}
         />
       </div>
+      <EquipmentSender device={device} />
       <Card className="diagnostics-card">
         <CardHeader className="flex-row items-center justify-between">
           <div>
@@ -1090,6 +1098,275 @@ function DeviceDetail({
       </div>
       <EventCards events={[...(device.events ?? [])].reverse().slice(0, 6)} />
     </div>
+  );
+}
+
+function EquipmentSender({ device }: { device: Device }) {
+  const commands = device.availableCommands ?? [];
+  const [mode, setMode] = useState<"command" | "sml">(
+    commands.length ? "command" : "sml",
+  );
+  const [commandName, setCommandName] = useState(commands[0]?.name ?? "");
+  const [parameters, setParameters] = useState<Record<string, string>>({});
+  const [sml, setSML] = useState("S1F1 W\n.");
+  const [timeoutSeconds, setTimeoutSeconds] = useState(30);
+  const [permission, setPermission] = useState<PermissionRequest | null>(null);
+  const [permissionStatus, setPermissionStatus] = useState<
+    "pending" | "allowed" | "denied" | "expired"
+  >("pending");
+  const [result, setResult] = useState<EquipmentActionResult | null>(null);
+  const [status, setStatus] = useState("");
+  const [busy, setBusy] = useState(false);
+  const selectedCommand = commands.find((item) => item.name === commandName);
+
+  useEffect(() => {
+    const first = device.availableCommands?.[0];
+    setMode(first ? "command" : "sml");
+    setCommandName(first?.name ?? "");
+    setParameters({});
+    setPermission(null);
+    setResult(null);
+    setStatus("");
+  }, [device.id]);
+
+  const resetPrepared = () => {
+    setPermission(null);
+    setResult(null);
+    setStatus("");
+    setPermissionStatus("pending");
+  };
+
+  const prepare = async () => {
+    setBusy(true);
+    setResult(null);
+    setStatus("");
+    try {
+      const next =
+        mode === "command"
+          ? await StudioService.PrepareEquipmentCommand({
+              equipmentId: device.id,
+              command: commandName,
+              parameters,
+              timeoutSeconds,
+            })
+          : await StudioService.PrepareEquipmentMessage({
+              equipmentId: device.id,
+              sml,
+              timeoutSeconds,
+            });
+      setPermission(next);
+      setPermissionStatus("pending");
+      setStatus("Review the exact payload below. Nothing has been sent yet.");
+    } catch (reason) {
+      setStatus(`Prepare failed · ${String(reason)}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const resolve = async (allow: boolean) => {
+    if (!permission || busy) return;
+    setBusy(true);
+    try {
+      const next = await StudioService.ResolveEquipmentAction(
+        permission.id,
+        allow,
+      );
+      setPermissionStatus(
+        next.status === "expired"
+          ? "expired"
+          : allow
+            ? "allowed"
+            : "denied",
+      );
+      setResult(next);
+      setStatus(next.message);
+    } catch (reason) {
+      setStatus(`Send failed · ${String(reason)}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Card className="equipment-sender">
+      <CardHeader className="flex-row items-start justify-between">
+        <div>
+          <CardTitle>Host → Equipment</CardTitle>
+          <CardDescription>
+            Send a Profile command or expert SML and wait for the secondary
+            reply.
+          </CardDescription>
+        </div>
+        <Badge variant={device.state === "selected" ? "success" : "warning"}>
+          {device.state === "selected" ? "ready" : "connect first"}
+        </Badge>
+      </CardHeader>
+      <CardContent className="equipment-sender-body">
+        <div className="sender-mode-row">
+          <Button
+            size="sm"
+            variant={mode === "command" ? "default" : "outline"}
+            disabled={!commands.length}
+            onClick={() => {
+              setMode("command");
+              resetPrepared();
+            }}
+          >
+            Profile command
+          </Button>
+          <Button
+            size="sm"
+            variant={mode === "sml" ? "default" : "outline"}
+            onClick={() => {
+              setMode("sml");
+              resetPrepared();
+            }}
+          >
+            Raw SML
+          </Button>
+          <label className="sender-timeout">
+            Reply timeout
+            <select
+              value={timeoutSeconds}
+              onChange={(event) => {
+                setTimeoutSeconds(Number(event.target.value));
+                resetPrepared();
+              }}
+            >
+              {[10, 30, 60, 120].map((value) => (
+                <option key={value} value={value}>
+                  {value}s
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+
+        {mode === "command" ? (
+          <div className="sender-command-form">
+            <label>
+              Command
+              <select
+                value={commandName}
+                onChange={(event) => {
+                  setCommandName(event.target.value);
+                  setParameters({});
+                  resetPrepared();
+                }}
+              >
+                {commands.map((item) => (
+                  <option key={item.name} value={item.name}>
+                    {item.displayName || item.name} · S{item.stream}F
+                    {item.function}
+                    {item.wait ? " W" : ""}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <div className="sender-parameters">
+              {(selectedCommand?.parameters ?? []).map((name) => (
+                <label key={name}>
+                  {name}
+                  <input
+                    value={parameters[name] ?? ""}
+                    onChange={(event) => {
+                      setParameters((value) => ({
+                        ...value,
+                        [name]: event.target.value,
+                      }));
+                      resetPrepared();
+                    }}
+                    placeholder={`Enter ${name}`}
+                  />
+                </label>
+              ))}
+              {!selectedCommand?.parameters?.length && (
+                <p>This Profile command has no parameters.</p>
+              )}
+            </div>
+          </div>
+        ) : (
+          <label className="sender-sml">
+            Complete SML message
+            <textarea
+              value={sml}
+              onChange={(event) => {
+                setSML(event.target.value);
+                resetPrepared();
+              }}
+              spellCheck={false}
+              placeholder={'S1F3 W\n<L[1]\n  <U4 1001>\n>\n.'}
+            />
+            <span>
+              The SxFy header and W bit are parsed from SML. Raw mode bypasses
+              Profile command validation.
+            </span>
+          </label>
+        )}
+
+        <div className="sender-actions">
+          <p>{status || "Prepare creates a one-shot permission card."}</p>
+          <Button
+            size="sm"
+            disabled={busy || device.state !== "selected" || !!permission}
+            onClick={() => void prepare()}
+          >
+            <Play className="size-3.5" />
+            {busy ? "Working…" : "Review send"}
+          </Button>
+          {permission && permissionStatus !== "pending" && (
+            <Button size="sm" variant="outline" onClick={resetPrepared}>
+              Prepare another
+            </Button>
+          )}
+        </div>
+
+        {permission && (
+          <PermissionCard
+            permission={permission}
+            status={permissionStatus}
+            onAllow={() => void resolve(true)}
+            onDeny={() => void resolve(false)}
+          />
+        )}
+
+        {result && (result.request || result.reply) && (
+          <div className="sender-exchange">
+            <div>
+              <div className="sender-exchange-heading">
+                <b>Primary request</b>
+                {result.request && (
+                  <Badge variant="outline">
+                    S{result.request.stream}F{result.request.function}
+                    {result.request.wait ? " W" : ""}
+                  </Badge>
+                )}
+              </div>
+              <pre>{result.request?.sml || "No request body recorded"}</pre>
+            </div>
+            <div>
+              <div className="sender-exchange-heading">
+                <b>Secondary reply</b>
+                {result.reply ? (
+                  <Badge variant={result.error ? "warning" : "success"}>
+                    S{result.reply.stream}F{result.reply.function}
+                  </Badge>
+                ) : (
+                  <Badge variant="outline">none</Badge>
+                )}
+              </div>
+              <pre>
+                {result.reply?.sml ||
+                  (result.request?.wait
+                    ? result.error || "No reply received"
+                    : "W bit is off; no reply expected")}
+              </pre>
+            </div>
+          </div>
+        )}
+      </CardContent>
+    </Card>
   );
 }
 
@@ -1901,6 +2178,7 @@ function Simulator({
   devices: Device[];
   onEmit: (id: string, scenario: string) => void;
 }) {
+  const simulators = devices.filter((device) => device.driver === "simulator");
   return (
     <div className="page-stack">
       <div className="simulator-hero">
@@ -1917,7 +2195,7 @@ function Simulator({
         </div>
       </div>
       <div className="grid grid-cols-2 gap-3">
-        {devices.map((device) => (
+        {simulators.map((device) => (
           <Card key={device.id}>
             <CardHeader>
               <div className="flex items-center justify-between">
@@ -1954,6 +2232,14 @@ function Simulator({
             </CardContent>
           </Card>
         ))}
+        {!simulators.length && (
+          <Card className="col-span-2">
+            <CardContent className="p-5 text-sm text-muted-foreground">
+              No simulator-backed devices are configured. Use a real device's
+              Host → Equipment panel to send Profile commands or raw SML.
+            </CardContent>
+          </Card>
+        )}
       </div>
     </div>
   );
@@ -2554,7 +2840,7 @@ function SettingsPage({
           <CardHeader>
             <CardTitle>Runtime safety</CardTitle>
             <CardDescription>
-              AI can inspect context; write actions remain permission-gated.
+              Equipment write actions remain permission-gated.
             </CardDescription>
           </CardHeader>
           <CardContent className="settings-form">
@@ -2563,13 +2849,13 @@ function SettingsPage({
               <div>
                 <b>Permission cards enabled</b>
                 <p>
-                  Every command requires an explicit Allow once or Deny
-                  decision.
+                  Profile commands, raw SML, and AI writes require an explicit
+                  Allow once or Deny decision.
                 </p>
               </div>
             </div>
             <label>
-              AI write policy
+              Equipment write policy
               <select
                 value={permissionPolicy.mode}
                 onChange={(event) =>
@@ -2580,7 +2866,7 @@ function SettingsPage({
                 }
               >
                 <option value="ask">Allowlist + ask every time</option>
-                <option value="deny">Deny all AI write actions</option>
+                <option value="deny">Deny all equipment write actions</option>
               </select>
             </label>
             <label>

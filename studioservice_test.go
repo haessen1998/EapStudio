@@ -10,6 +10,7 @@ import (
 
 	"eapstudio/internal/ai"
 	"eapstudio/internal/device"
+	sqlitestore "eapstudio/internal/store/sqlite"
 )
 
 func TestCompareAndMergePackagedEquipmentConfig(t *testing.T) {
@@ -184,6 +185,72 @@ func TestSimulatorSupportsAlarmAndArbitraryOutboundMessages(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatalf("simulator messages/alarms missing: %#v", service.Snapshot())
+}
+
+func TestOperatorCanSendRawSMLAndReceiveReplyOnce(t *testing.T) {
+	service, err := newStudioService(os.DirFS("."), t.TempDir()+"/eapstudio-test.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer service.close()
+	if err := service.ConnectDevice("ETCHER-01"); err != nil {
+		t.Fatal(err)
+	}
+	defer service.DisconnectDevice("ETCHER-01")
+
+	before := len(snapshotDevice(t, service, "ETCHER-01").Messages)
+	permission, err := service.PrepareEquipmentMessage(EquipmentMessageRequest{EquipmentID: "ETCHER-01", SML: "S1F1 W\n.", TimeoutSeconds: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if permission.Command != "S1F1" || permission.Tool != "send.secs-message" {
+		t.Fatalf("permission = %#v", permission)
+	}
+	if got := len(snapshotDevice(t, service, "ETCHER-01").Messages); got != before {
+		t.Fatalf("prepare sent a message: before=%d after=%d", before, got)
+	}
+
+	result, err := service.ResolveEquipmentAction(permission.ID, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "succeeded" || result.Request == nil || result.Request.Name() != "S1F1" || result.Reply == nil || result.Reply.Name() != "S1F2" {
+		t.Fatalf("result = %#v", result)
+	}
+	if _, err := service.ResolveEquipmentAction(permission.ID, true); err == nil {
+		t.Fatal("the same one-shot permission was accepted twice")
+	}
+}
+
+func TestOperatorProfileCommandPersistsOutcomeAndReply(t *testing.T) {
+	service, err := newStudioService(os.DirFS("."), t.TempDir()+"/eapstudio-test.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer service.close()
+	if err := service.ConnectDevice("ETCHER-01"); err != nil {
+		t.Fatal(err)
+	}
+	defer service.DisconnectDevice("ETCHER-01")
+
+	permission, err := service.PrepareEquipmentCommand(EquipmentCommandRequest{
+		EquipmentID: "ETCHER-01", Command: "send.recipe", TimeoutSeconds: 10,
+		Parameters: map[string]any{"recipeId": "ETCH-A", "materialId": "MAT-REAL"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := service.ResolveEquipmentAction(permission.ID, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "succeeded" || result.Command == nil || result.Command.Name != "send.recipe" || result.Reply == nil || result.Reply.Name() != "S7F4" {
+		t.Fatalf("result = %#v", result)
+	}
+	history, err := service.QueryCommandHistory(sqlitestore.HistoryQuery{Page: 1, PageSize: 25, EquipmentID: "ETCHER-01", Name: "send.recipe"})
+	if err != nil || len(history.Items) == 0 || history.Items[0].Status != "succeeded" {
+		t.Fatalf("history = %#v, err = %v", history, err)
+	}
 }
 
 func TestCopilotCommandRequiresExplicitPermission(t *testing.T) {

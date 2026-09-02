@@ -176,6 +176,20 @@ func (m *Manager) SubmitCommand(id, name string, parameters map[string]any, corr
 	}
 	return runtime.SubmitCommand(name, parameters, correlationID, causationID)
 }
+func (m *Manager) SendMessage(ctx context.Context, id string, message driver.Message) (MessageExchange, error) {
+	runtime, err := m.runtime(id)
+	if err != nil {
+		return MessageExchange{}, err
+	}
+	return runtime.SendMessage(ctx, message)
+}
+func (m *Manager) ExecuteCommandNow(ctx context.Context, id, name string, parameters map[string]any, correlationID, causationID string) (CommandExchange, error) {
+	runtime, err := m.runtime(id)
+	if err != nil {
+		return CommandExchange{}, err
+	}
+	return runtime.ExecuteCommandNow(ctx, name, parameters, correlationID, causationID)
+}
 func (m *Manager) ConnectAuto(ctx context.Context, config Config) {
 	for _, definition := range config.Devices {
 		if definition.AutoConnect {

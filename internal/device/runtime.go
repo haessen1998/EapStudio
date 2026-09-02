@@ -34,6 +34,7 @@ type Runtime struct {
 	simCancel  context.CancelFunc
 	simSeq     atomic.Uint64
 	shutdown   sync.Once
+	sendMu     sync.Mutex
 
 	mu          sync.RWMutex
 	state       driver.ConnectionState
@@ -78,6 +79,26 @@ type SimulatorScenario struct {
 	Function    uint8  `json:"function"`
 }
 
+type AvailableCommand struct {
+	Name        string   `json:"name"`
+	DisplayName string   `json:"displayName"`
+	Stream      uint8    `json:"stream"`
+	Function    uint8    `json:"function"`
+	Wait        bool     `json:"wait"`
+	Parameters  []string `json:"parameters"`
+}
+
+type MessageExchange struct {
+	Request driver.Message  `json:"request"`
+	Reply   *driver.Message `json:"reply,omitempty"`
+}
+
+type CommandExchange struct {
+	Command command.Command `json:"command"`
+	Request driver.Message  `json:"request"`
+	Reply   *driver.Message `json:"reply,omitempty"`
+}
+
 type Snapshot struct {
 	ID          string                 `json:"id"`
 	Badge       string                 `json:"badge"`
@@ -99,6 +120,7 @@ type Snapshot struct {
 	Messages    []driver.Message       `json:"messages"`
 	Events      []event.Event          `json:"events"`
 	Commands    []command.Command      `json:"commands"`
+	Available   []AvailableCommand     `json:"availableCommands"`
 	Scenarios   []SimulatorScenario    `json:"scenarios"`
 	Diagnostics RuntimeDiagnostics     `json:"diagnostics"`
 }
@@ -199,6 +221,51 @@ func (r *Runtime) SubmitCommand(name string, parameters map[string]any, correlat
 	}
 }
 
+// SendMessage sends one operator-authored primary and waits for its secondary
+// when the W bit is set. The caller owns the transaction timeout context.
+func (r *Runtime) SendMessage(ctx context.Context, message driver.Message) (MessageExchange, error) {
+	r.sendMu.Lock()
+	defer r.sendMu.Unlock()
+	if r.driver.State() != driver.StateSelected {
+		return MessageExchange{}, fmt.Errorf("device %s is not selected", r.definition.ID)
+	}
+	message.ID = fmt.Sprintf("out-manual-%s-%06d", r.definition.ID, r.simSeq.Add(1))
+	message.EquipmentID = r.definition.ID
+	message.Direction = driver.DirectionOut
+	message.Timestamp = time.Now()
+	r.recordMessage(message)
+	reply, err := r.driver.Send(ctx, message)
+	if reply != nil {
+		reply.EquipmentID = r.definition.ID
+		r.recordMessage(*reply)
+	}
+	if err != nil {
+		r.mu.Lock()
+		r.diagnostics.CommandFailures++
+		r.diagnostics.LastError = err.Error()
+		r.mu.Unlock()
+	}
+	return MessageExchange{Request: message, Reply: reply}, err
+}
+
+// ExecuteCommandNow builds a Profile command, sends it immediately, validates
+// the reply, and persists the same command/event evidence as automation work.
+func (r *Runtime) ExecuteCommandNow(ctx context.Context, name string, parameters map[string]any, correlationID, causationID string) (CommandExchange, error) {
+	if r.driver.State() != driver.StateSelected {
+		return CommandExchange{}, fmt.Errorf("device %s is not selected", r.definition.ID)
+	}
+	if _, ok := r.profile.Spec.Commands[name]; !ok {
+		return CommandExchange{}, fmt.Errorf("profile %s has no command %q", r.profile.Metadata.Name, name)
+	}
+	value := command.Command{
+		ID: fmt.Sprintf("cmd-ui-%s-%06d", r.definition.ID, r.simSeq.Add(1)), Type: domain.TypeCommand, Name: name,
+		EquipmentID: r.definition.ID, CorrelationID: correlationID, CausationID: causationID,
+		Status: command.StatusPending, CreatedAt: time.Now(), Parameters: parameters,
+	}
+	r.upsertCommand(value)
+	return r.executeCommand(ctx, value)
+}
+
 func (r *Runtime) receive(message driver.Message) {
 	message.EquipmentID = r.definition.ID
 	message.Direction = driver.DirectionIn
@@ -250,25 +317,32 @@ func (r *Runtime) processCommands() {
 		case <-r.stop:
 			return
 		case value := <-r.commands:
-			r.executeCommand(value)
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			_, _ = r.executeCommand(ctx, value)
+			cancel()
 		}
 	}
 }
 
-func (r *Runtime) executeCommand(value command.Command) {
+func (r *Runtime) executeCommand(ctx context.Context, value command.Command) (CommandExchange, error) {
+	r.sendMu.Lock()
+	defer r.sendMu.Unlock()
 	value.Status = command.StatusSending
 	r.upsertCommand(value)
 	outbound, err := r.adapter.BuildCommand(context.Background(), value, r.profile)
+	exchange := CommandExchange{Command: value, Request: outbound}
 	if err == nil {
 		outbound.ID = "out-" + value.ID
 		outbound.EquipmentID = value.EquipmentID
+		exchange.Request = outbound
 		r.recordMessage(outbound)
 		var reply *driver.Message
-		reply, err = r.driver.Send(context.Background(), outbound)
+		reply, err = r.driver.Send(ctx, outbound)
 		if reply != nil {
 			reply.EquipmentID = value.EquipmentID
 			r.recordMessage(*reply)
 		}
+		exchange.Reply = reply
 		if err == nil {
 			err = r.adapter.ValidateCommandReply(context.Background(), value, reply, r.profile)
 		}
@@ -288,6 +362,7 @@ func (r *Runtime) executeCommand(value command.Command) {
 	} else {
 		value.Status = command.StatusSucceeded
 	}
+	exchange.Command = value
 	r.upsertCommand(value)
 	data := make(map[string]any, len(value.Parameters)+1)
 	for key, item := range value.Parameters {
@@ -297,6 +372,7 @@ func (r *Runtime) executeCommand(value command.Command) {
 		data["error"] = err.Error()
 	}
 	r.publish(event.Event{ID: "evt-" + value.ID, Type: domain.TypeEvent, Name: eventName, EquipmentID: value.EquipmentID, CorrelationID: value.CorrelationID, CausationID: value.ID, CommandID: value.ID, Timestamp: now, Source: event.Source{Protocol: "secs-gem", Stream: definition.Stream, Function: definition.Function}, Data: data})
+	return exchange, err
 }
 
 func (r *Runtime) publish(value event.Event) {
@@ -485,6 +561,11 @@ func (r *Runtime) Snapshot() Snapshot {
 	copy(events, r.events)
 	commands := make([]command.Command, len(r.commandLog))
 	copy(commands, r.commandLog)
+	available := make([]AvailableCommand, 0, len(r.profile.Spec.Commands))
+	for name, definition := range r.profile.Spec.Commands {
+		available = append(available, AvailableCommand{Name: name, DisplayName: definition.DisplayName, Stream: definition.Stream, Function: definition.Function, Wait: definition.Wait, Parameters: append([]string(nil), definition.Parameters...)})
+	}
+	sort.Slice(available, func(i, j int) bool { return available[i].Name < available[j].Name })
 	scenarios := make([]SimulatorScenario, 0, len(r.profile.Spec.Simulator.Scenarios))
 	for _, name := range r.scenarioNames(false) {
 		scenario := r.profile.Spec.Simulator.Scenarios[name]
@@ -494,5 +575,5 @@ func (r *Runtime) Snapshot() Snapshot {
 	if provider, ok := r.driver.(driver.DiagnosticProvider); ok {
 		diagnostics.Protocol = provider.ProtocolDiagnostics()
 	}
-	return Snapshot{ID: r.definition.ID, Badge: r.definition.Badge, Name: r.definition.Name, Profile: r.definition.Profile, ProfileName: r.profile.Metadata.Name, Vendor: r.profile.Metadata.Vendor, Model: r.profile.Metadata.Model, Driver: r.definition.Driver, Adapter: r.adapter.Name(), AutoConnect: r.definition.AutoConnect, Protocol: r.definition.Connection.Protocol, Mode: r.definition.Connection.Mode, Host: r.definition.Connection.Host, Port: r.definition.Connection.Port, SessionID: r.definition.Connection.SessionID, State: r.state, StateDetail: r.detail, Messages: messages, Events: events, Commands: commands, Scenarios: scenarios, Diagnostics: diagnostics}
+	return Snapshot{ID: r.definition.ID, Badge: r.definition.Badge, Name: r.definition.Name, Profile: r.definition.Profile, ProfileName: r.profile.Metadata.Name, Vendor: r.profile.Metadata.Vendor, Model: r.profile.Metadata.Model, Driver: r.definition.Driver, Adapter: r.adapter.Name(), AutoConnect: r.definition.AutoConnect, Protocol: r.definition.Connection.Protocol, Mode: r.definition.Connection.Mode, Host: r.definition.Connection.Host, Port: r.definition.Connection.Port, SessionID: r.definition.Connection.SessionID, State: r.state, StateDetail: r.detail, Messages: messages, Events: events, Commands: commands, Available: available, Scenarios: scenarios, Diagnostics: diagnostics}
 }

@@ -84,7 +84,7 @@ Protocol traces, including SML and raw hex when available, are queued from the f
 
 The included automation demonstrates `material.arrived → send.recipe → recipe.sent`. The incoming S6F11 still receives S6F12 on the protocol fast path before Automation, routing, or AI work begins.
 
-To connect real equipment, change a device's `driver` from `simulator` to `go-secs` and set its HSMS host, port, mode, and session ID. SDK types remain confined to `internal/driver/secs`.
+To connect real equipment, change a device's `driver` from `simulator` to `go-secs` and set its HSMS host, port, mode, and session ID. The Device detail `Host → Equipment` panel can send a validated Profile command or one complete raw SML primary. Both create a one-shot permission card; a W-bit primary waits up to the selected timeout and displays its secondary reply. Request/reply traces are also written to Messages and SQLite. Simulator `Emit inbound` remains a separate Equipment → Host test path. SDK types remain confined to `internal/driver/secs`.
 
 ## Project boundaries
 
@@ -103,7 +103,7 @@ The local Copilot mode is a deterministic Runtime inspector rather than a langua
 
 The Workbench lists writable runtime Profiles, applies strict schema/compiler validation, previews Canonical Event → Adapter.BuildEvent → SECS → Adapter.Parse round trips, and hot reloads devices using a saved Profile. Device detail exposes connection attempts, lifecycle detail, IN/OUT counts, parse failures, queue drops, command failures, and the last transport error.
 
-AI write policy is persisted in SQLite. It supports deny-all or allowlist-plus-explicit-approval, equipment/command glob allowlists, and approval expiry. It never auto-approves a write. Permission cards show a parameter diff against the previous command of the same type; command execution outcomes remain queryable on the Commands page and through SQLite history.
+Equipment write policy is persisted in SQLite. It supports deny-all or allowlist-plus-explicit-approval, equipment/command glob allowlists, and approval expiry. It applies to Profile commands, raw `SxFy` sends, and AI actions and never auto-approves a write. Permission cards show a parameter diff against the previous command of the same type; command execution outcomes remain queryable on the Commands page and through SQLite history.
 
 The Settings page maintains a list of local, OpenAI Responses API compatible, and Chat Completions compatible configurations, with one explicit runtime default. An API Key entered in Settings is passed to Go for the current process and is never written to localStorage; `EAPSTUDIO_AI_API_KEY` remains the fallback. OpenAI Responses profiles receive a current default model when an older saved profile has an empty model. The Copilot supports up to four images or files (5 MB each): Responses receives native `input_image`/`input_file` content, while Chat-compatible endpoints receive images and supported text documents. Provider errors are decoded and displayed in the conversation. The equipment editor persists IDs, display badges, Profile paths, Adapter names, drivers, and connection settings. `generic-gem` is built in, while model-specific Adapter names must be registered in the backend registry. Read-only questions are answered from the selected DeviceRuntime snapshot. A write request such as sending `send.recipe` produces a typed Allow/Deny permission card; only **Allow once** submits the command to the device queue.
 

@@ -11,6 +11,15 @@ import * as secs$0 from "../driver/secs/models.js";
 // @ts-ignore: Unused imports
 import * as event$0 from "../event/models.js";
 
+export interface AvailableCommand {
+    "name": string;
+    "displayName": string;
+    "stream": number;
+    "function": number;
+    "wait": boolean;
+    "parameters": string[] | null;
+}
+
 export interface Config {
     "devices": Definition[] | null;
 }
@@ -77,6 +86,7 @@ export interface Snapshot {
     "messages": secs$0.Message[] | null;
     "events": event$0.Event[] | null;
     "commands": command$0.Command[] | null;
+    "availableCommands": AvailableCommand[] | null;
     "scenarios": SimulatorScenario[] | null;
     "diagnostics": RuntimeDiagnostics;
 }

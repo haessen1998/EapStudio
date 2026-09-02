@@ -52,6 +52,7 @@ type StudioService struct {
 	ruleFingerprint      [32]byte
 	watchCancel          context.CancelFunc
 	pending              map[string]AIActionPermission
+	pendingEquipment     map[string]pendingEquipmentAction
 	permissionSequence   atomic.Uint64
 	copilotEvents        chan CopilotStreamEvent
 }
@@ -105,6 +106,44 @@ type PermissionPolicy struct {
 	Equipment  []string `json:"equipment"`
 	Commands   []string `json:"commands"`
 	TTLMinutes int      `json:"ttlMinutes"`
+}
+
+type EquipmentCommandRequest struct {
+	EquipmentID    string         `json:"equipmentId"`
+	Command        string         `json:"command"`
+	Parameters     map[string]any `json:"parameters"`
+	TimeoutSeconds int            `json:"timeoutSeconds"`
+}
+
+type EquipmentMessageRequest struct {
+	EquipmentID    string `json:"equipmentId"`
+	SML            string `json:"sml"`
+	TimeoutSeconds int    `json:"timeoutSeconds"`
+}
+
+type EquipmentActionResult struct {
+	Status  string                  `json:"status"`
+	Message string                  `json:"message"`
+	Request *driver.Message         `json:"request,omitempty"`
+	Reply   *driver.Message         `json:"reply,omitempty"`
+	Command *EquipmentCommandResult `json:"command,omitempty"`
+	Error   string                  `json:"error,omitempty"`
+}
+
+// EquipmentCommandResult keeps the public binding independent from the command package
+// while exposing the identifiers and final status operators need.
+type EquipmentCommandResult struct {
+	ID     string `json:"id"`
+	Name   string `json:"name"`
+	Status string `json:"status"`
+}
+
+type pendingEquipmentAction struct {
+	Kind       string
+	Permission AIActionPermission
+	Command    EquipmentCommandRequest
+	Message    driver.Message
+	Timeout    time.Duration
 }
 
 func defaultPermissionPolicy() PermissionPolicy {
@@ -213,7 +252,7 @@ func newStudioServiceWithConfig(source fs.FS, databasePath string, config device
 		_ = history.Close()
 		return nil, err
 	}
-	service := &StudioService{packagedSource: source, router: routes, config: config, automation: engine, store: history, updates: make(chan struct{}, 1), aiConfig: ai.Config{Provider: "local"}, equipmentConfigPath: configPath, ruleSource: ruleSource, profileSource: ruleSource, runtimeConfigDir: configDir, fileSinkPath: fileOutput.Path(), routeConfigPath: routePath, automationConfigPath: automationPath, pending: map[string]AIActionPermission{}, copilotEvents: make(chan CopilotStreamEvent, 1024)}
+	service := &StudioService{packagedSource: source, router: routes, config: config, automation: engine, store: history, updates: make(chan struct{}, 1), aiConfig: ai.Config{Provider: "local"}, equipmentConfigPath: configPath, ruleSource: ruleSource, profileSource: ruleSource, runtimeConfigDir: configDir, fileSinkPath: fileOutput.Path(), routeConfigPath: routePath, automationConfigPath: automationPath, pending: map[string]AIActionPermission{}, pendingEquipment: map[string]pendingEquipmentAction{}, copilotEvents: make(chan CopilotStreamEvent, 1024)}
 	if err := service.loadStoredAIConfig(); err != nil {
 		_ = history.Close()
 		return nil, err
@@ -305,6 +344,174 @@ func (s *StudioService) ConnectDevice(id string) error {
 func (s *StudioService) DisconnectDevice(id string) error { return s.manager.Disconnect(id) }
 func (s *StudioService) EmitSimulatorScenario(id string, scenario string) error {
 	return s.manager.EmitScenario(id, scenario)
+}
+
+// PrepareEquipmentCommand validates a Profile command and creates a one-shot
+// permission card. Nothing is sent until ResolveEquipmentAction is allowed.
+func (s *StudioService) PrepareEquipmentCommand(request EquipmentCommandRequest) (AIActionPermission, error) {
+	selected := s.selectedEquipment(strings.TrimSpace(request.EquipmentID))
+	if selected == nil {
+		return AIActionPermission{}, fmt.Errorf("equipment %q was not found", request.EquipmentID)
+	}
+	if selected.State != driver.StateSelected {
+		return AIActionPermission{}, fmt.Errorf("device %s is not selected", selected.ID)
+	}
+	var definition *device.AvailableCommand
+	for index := range selected.Available {
+		if selected.Available[index].Name == request.Command {
+			definition = &selected.Available[index]
+			break
+		}
+	}
+	if definition == nil {
+		return AIActionPermission{}, fmt.Errorf("profile %s has no command %q", selected.ProfileName, request.Command)
+	}
+	if request.Parameters == nil {
+		request.Parameters = map[string]any{}
+	}
+	for _, name := range definition.Parameters {
+		if _, ok := request.Parameters[name]; !ok {
+			return AIActionPermission{}, fmt.Errorf("command %q requires parameter %q", request.Command, name)
+		}
+	}
+	policy, err := s.PermissionPolicy()
+	if err != nil {
+		return AIActionPermission{}, err
+	}
+	if policy.Mode == "deny" || !matchesPolicy(policy.Equipment, selected.ID) || !matchesPolicy(policy.Commands, request.Command) {
+		return AIActionPermission{}, fmt.Errorf("%s to %s is outside the configured write allowlist", request.Command, selected.ID)
+	}
+	timeout := normalizeSendTimeout(request.TimeoutSeconds)
+	request.TimeoutSeconds = int(timeout / time.Second)
+	id := fmt.Sprintf("permission-%06d", s.permissionSequence.Add(1))
+	permission := AIActionPermission{
+		ID: id, Tool: "send.command", EquipmentID: selected.ID, Command: request.Command,
+		Summary:    fmt.Sprintf("Send Profile command %s as S%dF%d", request.Command, definition.Stream, definition.Function),
+		Risk:       "This sends a message to the selected equipment and may change equipment state.",
+		Parameters: request.Parameters, ParameterDiff: s.commandParameterDiff(selected.ID, request.Command, request.Parameters),
+		ExpiresAt: time.Now().Add(time.Duration(policy.TTLMinutes) * time.Minute),
+	}
+	s.aiMu.Lock()
+	s.pendingEquipment[id] = pendingEquipmentAction{Kind: "command", Permission: permission, Command: request, Timeout: timeout}
+	s.aiMu.Unlock()
+	return permission, nil
+}
+
+// PrepareEquipmentMessage validates complete SML and creates a one-shot
+// permission card for an expert/raw SECS send.
+func (s *StudioService) PrepareEquipmentMessage(request EquipmentMessageRequest) (AIActionPermission, error) {
+	selected := s.selectedEquipment(strings.TrimSpace(request.EquipmentID))
+	if selected == nil {
+		return AIActionPermission{}, fmt.Errorf("equipment %q was not found", request.EquipmentID)
+	}
+	if selected.State != driver.StateSelected {
+		return AIActionPermission{}, fmt.Errorf("device %s is not selected", selected.ID)
+	}
+	request.SML = strings.TrimSpace(request.SML)
+	if len(request.SML) > 256<<10 {
+		return AIActionPermission{}, fmt.Errorf("outbound SML exceeds 256 KiB")
+	}
+	message, err := driver.ParseOutboundSML(request.SML)
+	if err != nil {
+		return AIActionPermission{}, err
+	}
+	name := message.Name()
+	policy, err := s.PermissionPolicy()
+	if err != nil {
+		return AIActionPermission{}, err
+	}
+	if policy.Mode == "deny" || !matchesPolicy(policy.Equipment, selected.ID) || !matchesPolicy(policy.Commands, name) {
+		return AIActionPermission{}, fmt.Errorf("%s to %s is outside the configured write allowlist", name, selected.ID)
+	}
+	timeout := normalizeSendTimeout(request.TimeoutSeconds)
+	id := fmt.Sprintf("permission-%06d", s.permissionSequence.Add(1))
+	parameters := map[string]any{"wait": message.Wait, "timeoutSeconds": int(timeout / time.Second), "sml": request.SML}
+	permission := AIActionPermission{
+		ID: id, Tool: "send.secs-message", EquipmentID: selected.ID, Command: name,
+		Summary:    fmt.Sprintf("Send raw %s%s to equipment", name, map[bool]string{true: " W"}[message.Wait]),
+		Risk:       "Raw SML bypasses Profile command semantics. Verify stream, function, W bit, item types, and values before allowing.",
+		Parameters: parameters, ParameterDiff: map[string]ParameterChange{},
+		ExpiresAt: time.Now().Add(time.Duration(policy.TTLMinutes) * time.Minute),
+	}
+	s.aiMu.Lock()
+	s.pendingEquipment[id] = pendingEquipmentAction{Kind: "message", Permission: permission, Message: message, Timeout: timeout}
+	s.aiMu.Unlock()
+	return permission, nil
+}
+
+func normalizeSendTimeout(seconds int) time.Duration {
+	if seconds <= 0 {
+		seconds = 30
+	}
+	if seconds > 120 {
+		seconds = 120
+	}
+	return time.Duration(seconds) * time.Second
+}
+
+func (s *StudioService) commandParameterDiff(equipmentID, name string, parameters map[string]any) map[string]ParameterChange {
+	diff := map[string]ParameterChange{}
+	var previous map[string]any
+	if history, err := s.store.QueryCommands(context.Background(), sqlitestore.HistoryQuery{Page: 1, PageSize: 1, EquipmentID: equipmentID, Name: name}); err == nil && len(history.Items) > 0 {
+		previous = history.Items[0].Parameters
+	}
+	for key, after := range parameters {
+		var before any
+		if previous != nil {
+			before = previous[key]
+		}
+		if !reflect.DeepEqual(before, after) {
+			diff[key] = ParameterChange{Before: before, After: after}
+		}
+	}
+	return diff
+}
+
+// ResolveEquipmentAction consumes a prepared action exactly once. Send errors
+// are returned in the result so a received negative reply remains visible.
+func (s *StudioService) ResolveEquipmentAction(permissionID string, allow bool) (EquipmentActionResult, error) {
+	s.aiMu.Lock()
+	action, ok := s.pendingEquipment[permissionID]
+	if ok {
+		delete(s.pendingEquipment, permissionID)
+	}
+	s.aiMu.Unlock()
+	if !ok {
+		return EquipmentActionResult{}, fmt.Errorf("permission request does not exist or was already resolved")
+	}
+	if time.Now().After(action.Permission.ExpiresAt) {
+		return EquipmentActionResult{Status: "expired", Message: "Permission expired; nothing was sent."}, nil
+	}
+	if !allow {
+		return EquipmentActionResult{Status: "denied", Message: "Permission denied; nothing was sent."}, nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), action.Timeout)
+	defer cancel()
+	if action.Kind == "command" {
+		exchange, err := s.manager.ExecuteCommandNow(ctx, action.Command.EquipmentID, action.Command.Command, action.Command.Parameters, "operator-"+permissionID, permissionID)
+		result := EquipmentActionResult{
+			Status: string(exchange.Command.Status), Message: fmt.Sprintf("%s completed with status %s", exchange.Command.Name, exchange.Command.Status),
+			Request: &exchange.Request, Reply: exchange.Reply,
+			Command: &EquipmentCommandResult{ID: exchange.Command.ID, Name: exchange.Command.Name, Status: string(exchange.Command.Status)},
+		}
+		if err != nil {
+			result.Status, result.Error = "failed", err.Error()
+			result.Message = "Command failed: " + err.Error()
+		}
+		return result, nil
+	}
+	exchange, err := s.manager.SendMessage(ctx, action.Permission.EquipmentID, action.Message)
+	result := EquipmentActionResult{Status: "succeeded", Message: "Message sent.", Request: &exchange.Request, Reply: exchange.Reply}
+	if action.Message.Wait && exchange.Reply != nil {
+		result.Message = fmt.Sprintf("Message sent; received %s.", exchange.Reply.Name())
+	} else if action.Message.Wait {
+		result.Message = "Message sent, but no secondary reply was returned."
+	}
+	if err != nil {
+		result.Status, result.Error = "failed", err.Error()
+		result.Message = "Message failed: " + err.Error()
+	}
+	return result, nil
 }
 
 func (s *StudioService) AIConfig() ai.Config {

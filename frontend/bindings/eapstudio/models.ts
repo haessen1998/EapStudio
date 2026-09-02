@@ -65,6 +65,32 @@ export interface CopilotStreamEvent {
     "reply"?: CopilotReply | null;
 }
 
+export interface EquipmentActionResult {
+    "status": string;
+    "message": string;
+    "request"?: secs$0.Message | null;
+    "reply"?: secs$0.Message | null;
+    "command"?: EquipmentCommandResult | null;
+    "error"?: string;
+}
+
+export interface EquipmentCommandRequest {
+    "equipmentId": string;
+    "command": string;
+    "parameters": { [_ in string]?: any } | null;
+    "timeoutSeconds": number;
+}
+
+/**
+ * EquipmentCommandResult keeps the public binding independent from the command package
+ * while exposing the identifiers and final status operators need.
+ */
+export interface EquipmentCommandResult {
+    "id": string;
+    "name": string;
+    "status": string;
+}
+
 export interface EquipmentConfigComparison {
     "runtimePath": string;
     "packagedCount": number;
@@ -83,6 +109,12 @@ export interface EquipmentMergeResult {
     "added": string[] | null;
     "path": string;
     "restartRequired": boolean;
+}
+
+export interface EquipmentMessageRequest {
+    "equipmentId": string;
+    "sml": string;
+    "timeoutSeconds": number;
 }
 
 export interface ParameterChange {

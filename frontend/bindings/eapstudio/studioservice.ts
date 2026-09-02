@@ -112,6 +112,22 @@ export function PermissionPolicy(): $CancellablePromise<$models.PermissionPolicy
     return $Call.ByID(2226697794);
 }
 
+/**
+ * PrepareEquipmentCommand validates a Profile command and creates a one-shot
+ * permission card. Nothing is sent until ResolveEquipmentAction is allowed.
+ */
+export function PrepareEquipmentCommand(request: $models.EquipmentCommandRequest): $CancellablePromise<$models.AIActionPermission> {
+    return $Call.ByID(2377340547, request);
+}
+
+/**
+ * PrepareEquipmentMessage validates complete SML and creates a one-shot
+ * permission card for an expert/raw SECS send.
+ */
+export function PrepareEquipmentMessage(request: $models.EquipmentMessageRequest): $CancellablePromise<$models.AIActionPermission> {
+    return $Call.ByID(774245609, request);
+}
+
 export function PreviewProfileEvent(yamlText: string, eventName: string, data: { [_ in string]?: any } | null): $CancellablePromise<$models.ProfilePreview> {
     return $Call.ByID(2503169246, yamlText, eventName, data);
 }
@@ -138,6 +154,14 @@ export function ReloadRules(): $CancellablePromise<$models.RuleReloadResult> {
 
 export function ResolveAIAction(permissionID: string, allow: boolean): $CancellablePromise<$models.CopilotReply> {
     return $Call.ByID(1547149465, permissionID, allow);
+}
+
+/**
+ * ResolveEquipmentAction consumes a prepared action exactly once. Send errors
+ * are returned in the result so a received negative reply remains visible.
+ */
+export function ResolveEquipmentAction(permissionID: string, allow: boolean): $CancellablePromise<$models.EquipmentActionResult> {
+    return $Call.ByID(1072577113, permissionID, allow);
 }
 
 export function SaveAIProfiles(profiles: $models.AIProfileConfig[] | null, defaultID: string): $CancellablePromise<void> {

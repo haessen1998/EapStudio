@@ -40,6 +40,30 @@ type Message struct {
 
 func (m Message) Name() string { return "S" + itoa(m.Stream) + "F" + itoa(m.Function) }
 
+// ParseOutboundSML validates one complete SML message and converts its header
+// into the SDK-neutral representation used by DeviceRuntime. The go-secs
+// driver parses the item again at send time; keeping validation here prevents
+// malformed operator input from reaching a live connection.
+func ParseOutboundSML(text string) (Message, error) {
+	parsed, err := sml.Parse(text)
+	if err != nil {
+		return Message{}, fmt.Errorf("parse outbound SML: %w", err)
+	}
+	if len(parsed) != 1 {
+		return Message{}, fmt.Errorf("outbound SML must contain exactly one message")
+	}
+	message := parsed[0]
+	return Message{
+		Direction: DirectionOut,
+		Timestamp: time.Now(),
+		Stream:    message.Stream(),
+		Function:  message.Function(),
+		Wait:      message.WaitBit(),
+		SML:       text,
+		Tree:      text,
+	}, nil
+}
+
 // PopulateRawHex renders SDK-neutral simulator messages into the same complete
 // HSMS wire-frame representation captured by the real go-secs driver.
 func PopulateRawHex(message *Message) error {
