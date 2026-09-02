@@ -64,6 +64,10 @@ func TestCompareAndMergePackagedEquipmentConfig(t *testing.T) {
 	if err != nil || reordered.Devices[0].ID != order[0] {
 		t.Fatalf("reordered = %#v, err = %v", reordered, err)
 	}
+	wantRuntimeFirst := order[len(order)-2]
+	if snapshots := service.Snapshot().Devices; len(snapshots) != len(runtimeConfig.Devices) || snapshots[0].ID != wantRuntimeFirst {
+		t.Fatalf("runtime order was not updated: %#v", snapshots)
+	}
 }
 
 func snapshotDevice(t *testing.T, service *StudioService, id string) device.Snapshot {

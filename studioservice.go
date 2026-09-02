@@ -376,7 +376,13 @@ func (s *StudioService) SaveDeviceOrder(order []string) error {
 		}
 	}
 	config.Devices = reordered
-	return device.SaveConfig(s.equipmentConfigPath, config)
+	if err := device.SaveConfig(s.equipmentConfigPath, config); err != nil {
+		return err
+	}
+	if s.manager != nil {
+		s.manager.SetOrder(order)
+	}
+	return nil
 }
 
 type EquipmentConfigComparison struct {

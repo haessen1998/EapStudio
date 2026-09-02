@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"io/fs"
-	"sort"
 	"sync"
 
 	"eapstudio/internal/automation"
@@ -18,10 +17,11 @@ import (
 type Manager struct {
 	mu       sync.RWMutex
 	runtimes map[string]*Runtime
+	order    []string
 }
 
 func NewManager(source fs.FS, config Config, routes *router.Router, engine *automation.Engine, recorder Recorder, onChange func()) (*Manager, error) {
-	manager := &Manager{runtimes: map[string]*Runtime{}}
+	manager := &Manager{runtimes: map[string]*Runtime{}, order: make([]string, 0, len(config.Devices))}
 	profiles := map[string]*profile.CompiledProfile{}
 	for _, definition := range config.Devices {
 		compiled, ok := profiles[definition.Profile]
@@ -51,6 +51,7 @@ func NewManager(source fs.FS, config Config, routes *router.Router, engine *auto
 			return nil, fmt.Errorf("create adapter for %s: %w", definition.ID, err)
 		}
 		manager.runtimes[definition.ID] = NewRuntime(definition, compiled, protocol, adapter, routes, engine, recorder, onChange)
+		manager.order = append(manager.order, definition.ID)
 	}
 	return manager, nil
 }
@@ -94,11 +95,31 @@ func (m *Manager) Snapshots() []Snapshot {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	result := make([]Snapshot, 0, len(m.runtimes))
-	for _, runtime := range m.runtimes {
-		result = append(result, runtime.Snapshot())
+	for _, id := range m.order {
+		if runtime, ok := m.runtimes[id]; ok {
+			result = append(result, runtime.Snapshot())
+		}
 	}
-	sort.Slice(result, func(i, j int) bool { return result[i].ID < result[j].ID })
 	return result
+}
+
+func (m *Manager) SetOrder(order []string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	next := make([]string, 0, len(m.runtimes))
+	seen := make(map[string]bool, len(order))
+	for _, id := range order {
+		if _, exists := m.runtimes[id]; exists && !seen[id] {
+			next = append(next, id)
+			seen[id] = true
+		}
+	}
+	for _, id := range m.order {
+		if !seen[id] {
+			next = append(next, id)
+		}
+	}
+	m.order = next
 }
 func (m *Manager) runtime(id string) (*Runtime, error) {
 	m.mu.RLock()

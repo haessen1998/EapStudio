@@ -1537,9 +1537,51 @@ tbody tr:hover {
   display: none;
 }
 .copilot-composer {
-  flex: 0 0 auto;
-  margin: 4px 12px 8px;
+  min-height: 58px;
+  flex: 1;
+  margin: 0 12px 8px;
   background: color-mix(in srgb, var(--card) 88%, transparent);
+}
+.copilot-composer-shell {
+  display: flex;
+  min-height: 76px;
+  max-height: 55vh;
+  flex: 0 0 auto;
+  overflow: hidden;
+  flex-direction: column;
+}
+.copilot-composer-resizer {
+  position: relative;
+  display: grid;
+  height: 10px;
+  flex: 0 0 10px;
+  place-items: center;
+  outline: none;
+  cursor: ns-resize;
+  touch-action: none;
+}
+.copilot-composer-resizer::before {
+  position: absolute;
+  right: 0;
+  left: 0;
+  height: 1px;
+  background: var(--border);
+  content: "";
+}
+.copilot-composer-resizer span {
+  z-index: 1;
+  width: 34px;
+  height: 3px;
+  border-radius: 99px;
+  background: color-mix(in srgb, var(--muted-foreground) 65%, var(--border));
+  transition:
+    width 0.15s,
+    background 0.15s;
+}
+.copilot-composer-resizer:hover span,
+.copilot-composer-resizer:focus-visible span {
+  width: 48px;
+  background: var(--primary);
 }
 .ai-local-explanation {
   display: flex;

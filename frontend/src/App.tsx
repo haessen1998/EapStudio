@@ -204,19 +204,6 @@ function initialAIProfiles(): AIProfile[] {
   ];
 }
 
-function loadDeviceOrder() {
-  try {
-    const value = JSON.parse(
-      localStorage.getItem("eapstudio.deviceOrder") ?? "[]",
-    );
-    return Array.isArray(value)
-      ? value.filter((item): item is string => typeof item === "string")
-      : [];
-  } catch {
-    return [];
-  }
-}
-
 function compactDeviceLabel(id: string) {
   const parts = id.split(/[-_]/).filter(Boolean);
   return (parts[parts.length - 1] ?? id).slice(0, 3).toUpperCase();
@@ -240,7 +227,7 @@ function App() {
   const [leftCollapsed, setLeftCollapsed] = useState(false);
   const [rightCollapsed, setRightCollapsed] = useState(false);
   const [pageSize, setPageSize] = useState<PageSize>(loadPageSize);
-  const [deviceOrder, setDeviceOrder] = useState<string[]>(loadDeviceOrder);
+  const [deviceOrder, setDeviceOrder] = useState<string[]>([]);
   const [draggedDeviceID, setDraggedDeviceID] = useState("");
   const deviceOrderSaveTimer = useRef<number | undefined>(undefined);
 
@@ -338,9 +325,6 @@ function App() {
   useEffect(() => {
     localStorage.setItem("eapstudio.rightWidth", String(rightWidth));
   }, [rightWidth]);
-  useEffect(() => {
-    localStorage.setItem("eapstudio.deviceOrder", JSON.stringify(deviceOrder));
-  }, [deviceOrder]);
   useEffect(
     () => () => {
       if (deviceOrderSaveTimer.current)
@@ -3030,8 +3014,40 @@ function Copilot({
   const [deleteCandidate, setDeleteCandidate] = useState<CopilotSession | null>(
     null,
   );
+  const [composerHeight, setComposerHeight] = useState(
+    () =>
+      Number(localStorage.getItem("eapstudio.copilotComposerHeight")) || 112,
+  );
   const activeSessionRef = useRef("");
   const activeProfile = profiles.find((item) => item.id === activeAIID);
+
+  useEffect(() => {
+    localStorage.setItem(
+      "eapstudio.copilotComposerHeight",
+      String(composerHeight),
+    );
+  }, [composerHeight]);
+
+  const beginComposerResize = (event: ReactPointerEvent) => {
+    event.preventDefault();
+    const startY = event.clientY;
+    const startHeight = composerHeight;
+    const move = (moveEvent: PointerEvent) => {
+      const maximum = Math.max(160, Math.floor(window.innerHeight * 0.55));
+      setComposerHeight(
+        Math.min(
+          maximum,
+          Math.max(76, startHeight + startY - moveEvent.clientY),
+        ),
+      );
+    };
+    const stop = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", stop);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", stop);
+  };
 
   const refreshSessions = async (search = sessionSearch) => {
     const values = (await StudioService.ListCopilotSessions(search)) ?? [];
@@ -3471,70 +3487,92 @@ function Copilot({
             )}
           </ConversationContent>
         </Conversation>
-        {attachments.length > 0 && (
-          <div className="attachment-tray">
-            {attachments.map((item) => (
-              <div key={item.name}>
-                {item.mediaType.startsWith("image/") ? (
-                  <ImageIcon className="size-3.5" />
-                ) : (
-                  <FileText className="size-3.5" />
-                )}
-                <span>{item.name}</span>
-                <button
-                  onClick={() =>
-                    setAttachments((current) =>
-                      current.filter((value) => value !== item),
-                    )
-                  }
-                  aria-label={`Remove ${item.name}`}
-                >
-                  <X className="size-3" />
-                </button>
-              </div>
-            ))}
-          </div>
-        )}
-        {attachmentError && (
-          <p className="attachment-error">{attachmentError}</p>
-        )}
-        <PromptInput className="copilot-composer" onSubmit={ask}>
-          <label className="attachment-button" title="Attach image or file">
-            <Paperclip className="size-4" />
-            <input
-              type="file"
-              multiple
-              accept="image/*,.pdf,.txt,.md,.csv,.json,.xml,.log"
-              onChange={(event) => {
-                void selectFiles(event.target.files);
-                event.target.value = "";
-              }}
-            />
-          </label>
-          <PromptInputTextarea
-            value={prompt}
-            onChange={(event) => setPrompt(event.target.value)}
+        <div
+          className="copilot-composer-shell"
+          style={{ height: composerHeight }}
+        >
+          <div
+            className="copilot-composer-resizer"
+            role="separator"
+            aria-label="Resize message input"
+            aria-orientation="horizontal"
+            tabIndex={0}
+            onPointerDown={beginComposerResize}
+            onDoubleClick={() => setComposerHeight(112)}
             onKeyDown={(event) => {
-              if (
-                event.key === "Enter" &&
-                !event.shiftKey &&
-                !event.nativeEvent.isComposing
-              ) {
-                event.preventDefault();
-                event.currentTarget.form?.requestSubmit();
-              }
+              if (event.key === "ArrowUp")
+                setComposerHeight((value) => Math.min(480, value + 16));
+              if (event.key === "ArrowDown")
+                setComposerHeight((value) => Math.max(76, value - 16));
             }}
-            placeholder={
-              scope === "ALL"
-                ? "Ask across all devices or general topics…"
-                : `Ask about ${scope}…`
-            }
-          />
-          <PromptInputSubmit
-            loading={loading}
-            disabled={!prompt.trim() && attachments.length === 0}
-          />
-        </PromptInput>
+          >
+            <span />
+          </div>
+          {attachments.length > 0 && (
+            <div className="attachment-tray">
+              {attachments.map((item) => (
+                <div key={item.name}>
+                  {item.mediaType.startsWith("image/") ? (
+                    <ImageIcon className="size-3.5" />
+                  ) : (
+                    <FileText className="size-3.5" />
+                  )}
+                  <span>{item.name}</span>
+                  <button
+                    onClick={() =>
+                      setAttachments((current) =>
+                        current.filter((value) => value !== item),
+                      )
+                    }
+                    aria-label={`Remove ${item.name}`}
+                  >
+                    <X className="size-3" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+          {attachmentError && (
+            <p className="attachment-error">{attachmentError}</p>
+          )}
+          <PromptInput className="copilot-composer" onSubmit={ask}>
+            <label className="attachment-button" title="Attach image or file">
+              <Paperclip className="size-4" />
+              <input
+                type="file"
+                multiple
+                accept="image/*,.pdf,.txt,.md,.csv,.json,.xml,.log"
+                onChange={(event) => {
+                  void selectFiles(event.target.files);
+                  event.target.value = "";
+                }}
+              />
+            </label>
+            <PromptInputTextarea
+              value={prompt}
+              onChange={(event) => setPrompt(event.target.value)}
+              onKeyDown={(event) => {
+                if (
+                  event.key === "Enter" &&
+                  !event.shiftKey &&
+                  !event.nativeEvent.isComposing
+                ) {
+                  event.preventDefault();
+                  event.currentTarget.form?.requestSubmit();
+                }
+              }}
+              placeholder={
+                scope === "ALL"
+                  ? "Ask across all devices or general topics…"
+                  : `Ask about ${scope}…`
+              }
+            />
+            <PromptInputSubmit
+              loading={loading}
+              disabled={!prompt.trim() && attachments.length === 0}
+            />
+          </PromptInput>
+        </div>
       </div>
       {deleteCandidate && (
         <div className="copilot-dialog-backdrop">

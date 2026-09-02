@@ -25,7 +25,7 @@ export function PromptInputTextarea(
   return (
     <textarea
       rows={2}
-      className="max-h-64 min-h-10 flex-1 resize-y bg-transparent px-2 py-1.5 text-sm outline-none placeholder:text-muted-foreground"
+      className="h-full min-h-10 flex-1 resize-none bg-transparent px-2 py-1.5 text-sm outline-none placeholder:text-muted-foreground"
       {...props}
     />
   );
