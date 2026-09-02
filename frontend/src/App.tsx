@@ -517,17 +517,38 @@ function App() {
             </div>
           </div>
         </div>
-        <button
-          className={cn(
-            "sidebar-footer",
-            page === "settings" && "sidebar-footer-active",
-          )}
-          onClick={() => setPage("settings")}
-        >
-          <Settings2 className="size-4 shrink-0" />
-          <span className="sidebar-label">Settings · Runtime v0.1.0</span>
-          <span className="sidebar-label ml-auto text-emerald-400">●</span>
-        </button>
+        <div className="sidebar-footer">
+          <div
+            className="sidebar-runtime sidebar-label"
+            title="Runtime healthy"
+          >
+            <span className="status-dot status-online" />
+            <span>Runtime healthy</span>
+          </div>
+          <Button
+            className="sidebar-footer-action"
+            variant="ghost"
+            size="icon"
+            onClick={refresh}
+            aria-label="Refresh runtime"
+            title="Reload Router/Automation rules and refresh runtime"
+          >
+            <RefreshCw className="size-4" />
+          </Button>
+          <Button
+            className={cn(
+              "sidebar-footer-action",
+              page === "settings" && "sidebar-footer-action-active",
+            )}
+            variant="ghost"
+            size="icon"
+            onClick={() => setPage("settings")}
+            aria-label="Settings"
+            title="Settings"
+          >
+            <Settings2 className="size-4" />
+          </Button>
+        </div>
       </aside>
       <ResizeHandle
         side="left"
@@ -570,19 +591,6 @@ function App() {
             />
           </label>
           <div className="flex items-center gap-2">
-            <Badge variant="success">
-              <span className="mr-1 size-1.5 rounded-full bg-emerald-400" />
-              Runtime healthy
-            </Badge>
-            <Button
-              variant="outline"
-              size="icon"
-              onClick={refresh}
-              aria-label="Refresh"
-              title="Reload Router/Automation rules and refresh the runtime snapshot"
-            >
-              <RefreshCw className="size-4" />
-            </Button>
             <Button
               className="topbar-panel-toggle"
               variant="outline"
@@ -699,7 +707,7 @@ function App() {
         onPointerDown={(event) => beginResize("right", event)}
         onDoubleClick={() => setRightCollapsed(true)}
       />
-      <Copilot device={selectedDevice} collapsed={rightCollapsed} />
+      <Copilot devices={devices} collapsed={rightCollapsed} />
     </div>
   );
 }
@@ -2652,11 +2660,24 @@ function SettingsPage({
                       updateAI("provider", event.target.value)
                     }
                   >
-                    <option value="local">Local grounded</option>
+                    <option value="local">
+                      Local grounded (offline rules)
+                    </option>
                     <option value="responses">Responses API</option>
                     <option value="chat">Chat Completions</option>
                   </select>
                 </label>
+                {selectedAI.provider === "local" && (
+                  <div className="ai-local-explanation">
+                    <b>Offline rule-based assistant</b>
+                    <span>
+                      Uses local Runtime snapshots, SQLite history, Profile,
+                      Router and Automation configuration. It does not call a
+                      model, use an API key, read attachments, or answer broad
+                      general-knowledge questions.
+                    </span>
+                  </div>
+                )}
                 {selectedAI.provider !== "local" && (
                   <>
                     <label>
@@ -2975,10 +2996,10 @@ function readAttachment(file: File): Promise<CopilotAttachment> {
 }
 
 function Copilot({
-  device,
+  devices,
   collapsed,
 }: {
-  device?: Device;
+  devices: Device[];
   collapsed: boolean;
 }) {
   type ChatMessage = {
@@ -2990,39 +3011,91 @@ function Copilot({
     permission?: PermissionRequest;
     permissionStatus?: "pending" | "allowed" | "denied" | "expired";
   };
+  type CopilotSession = NonNullable<
+    Awaited<ReturnType<typeof StudioService.ListCopilotSessions>>
+  >[number];
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [prompt, setPrompt] = useState("");
   const [attachments, setAttachments] = useState<CopilotAttachment[]>([]);
   const [attachmentError, setAttachmentError] = useState("");
   const [loading, setLoading] = useState(false);
   const [historyLoading, setHistoryLoading] = useState(false);
-  const [provider, setProvider] = useState("local");
-  const activeEquipmentID = useRef("");
+  const [profiles, setProfiles] = useState<AIProfile[]>([]);
+  const [activeAIID, setActiveAIID] = useState("");
+  const [sessions, setSessions] = useState<CopilotSession[]>([]);
+  const [activeSessionID, setActiveSessionID] = useState("");
+  const [scope, setScope] = useState("ALL");
+  const [sessionSearch, setSessionSearch] = useState("");
+  const [showSessions, setShowSessions] = useState(false);
+  const [deleteCandidate, setDeleteCandidate] = useState<CopilotSession | null>(
+    null,
+  );
+  const activeSessionRef = useRef("");
+  const activeProfile = profiles.find((item) => item.id === activeAIID);
+
+  const refreshSessions = async (search = sessionSearch) => {
+    const values = (await StudioService.ListCopilotSessions(search)) ?? [];
+    setSessions(values);
+    return values;
+  };
+
   useEffect(() => {
-    const refreshProvider = () => {
-      StudioService.AIConfig().then((config) => setProvider(config.provider));
+    const refreshProfiles = () => {
+      Promise.all([
+        StudioService.ListAIProfiles(),
+        StudioService.ActiveAIProfileID(),
+      ]).then(([items, activeID]) => {
+        setProfiles((items ?? []) as AIProfile[]);
+        setActiveAIID(activeID);
+      });
     };
-    refreshProvider();
-    window.addEventListener("eapstudio:ai-config-changed", refreshProvider);
+    refreshProfiles();
+    window.addEventListener("eapstudio:ai-config-changed", refreshProfiles);
     return () =>
       window.removeEventListener(
         "eapstudio:ai-config-changed",
-        refreshProvider,
+        refreshProfiles,
       );
   }, []);
+
   useEffect(() => {
-    const equipmentID = device?.id ?? "";
-    activeEquipmentID.current = equipmentID;
+    let active = true;
+    StudioService.ListCopilotSessions("").then(async (items) => {
+      let values = items ?? [];
+      if (!values.length) {
+        values = [await StudioService.CreateCopilotSession("ALL")];
+      }
+      if (!active) return;
+      setSessions(values);
+      const first = values[0];
+      setActiveSessionID(first.id);
+      setScope(first.scope);
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!showSessions) return;
+    const timer = window.setTimeout(() => {
+      void refreshSessions(sessionSearch);
+    }, 180);
+    return () => window.clearTimeout(timer);
+  }, [sessionSearch, showSessions]);
+
+  useEffect(() => {
+    activeSessionRef.current = activeSessionID;
     setLoading(false);
-    if (!equipmentID) {
+    if (!activeSessionID) {
       setMessages([]);
       return;
     }
     let active = true;
     setHistoryLoading(true);
-    StudioService.CopilotHistory(equipmentID)
+    StudioService.CopilotHistory(activeSessionID)
       .then((history) => {
-        if (!active || activeEquipmentID.current !== equipmentID) return;
+        if (!active || activeSessionRef.current !== activeSessionID) return;
         setMessages(
           (history ?? []).map((message) => ({
             id: message.id,
@@ -3047,10 +3120,12 @@ function Copilot({
     return () => {
       active = false;
     };
-  }, [device?.id]);
+  }, [activeSessionID]);
+
   useEffect(() => {
     const cancel = Events.On("studio:copilot-stream", (event) => {
       const value = event.data as CopilotStreamEvent;
+      if (value.sessionId !== activeSessionRef.current) return;
       const messageID = `assistant-${value.requestId}`;
       setMessages((current) =>
         current.map((message) =>
@@ -3074,10 +3149,61 @@ function Copilot({
             : message,
         ),
       );
-      if (value.done) setLoading(false);
+      if (value.done) {
+        setLoading(false);
+        void refreshSessions("");
+      }
     });
     return () => cancel();
   }, []);
+
+  const createSession = async () => {
+    const created = await StudioService.CreateCopilotSession("ALL");
+    setSessionSearch("");
+    setSessions((current) => [created, ...current]);
+    setActiveSessionID(created.id);
+    setScope(created.scope);
+    setShowSessions(false);
+  };
+
+  const selectSession = (session: CopilotSession) => {
+    setActiveSessionID(session.id);
+    setScope(session.scope);
+    setShowSessions(false);
+  };
+
+  const deleteSession = async () => {
+    if (!deleteCandidate) return;
+    const deletingActive = deleteCandidate.id === activeSessionID;
+    await StudioService.DeleteCopilotSession(deleteCandidate.id);
+    setDeleteCandidate(null);
+    let values = await refreshSessions("");
+    if (!values.length) {
+      values = [await StudioService.CreateCopilotSession("ALL")];
+      setSessions(values);
+    }
+    if (deletingActive) {
+      setActiveSessionID(values[0].id);
+      setScope(values[0].scope);
+    }
+  };
+
+  const changeScope = async (next: string) => {
+    if (!activeSessionID || loading) return;
+    await StudioService.UpdateCopilotSessionScope(activeSessionID, next);
+    setScope(next);
+    setSessions((current) =>
+      current.map((item) =>
+        item.id === activeSessionID ? { ...item, scope: next } : item,
+      ),
+    );
+  };
+
+  const activateProfile = async (id: string) => {
+    await StudioService.ActivateAIProfile(id);
+    setActiveAIID(id);
+  };
+
   const selectFiles = async (files: FileList | null) => {
     if (!files?.length) return;
     setAttachmentError("");
@@ -3102,7 +3228,7 @@ function Copilot({
     const question =
       prompt.trim() ||
       (attachments.length ? "请分析这些附件，并结合当前设备状态回答。" : "");
-    if (!question || !device) return;
+    if (!question || !activeSessionID) return;
     const outgoing = [...attachments];
     setPrompt("");
     setAttachments([]);
@@ -3126,8 +3252,9 @@ function Copilot({
     try {
       await StudioService.AskCopilotStream(
         requestID,
+        activeSessionID,
         question,
-        device.id,
+        scope,
         outgoing,
       );
     } catch (reason) {
@@ -3137,7 +3264,7 @@ function Copilot({
             ? {
                 ...message,
                 text: `AI 调用失败：${String(reason)}`,
-                evidence: [provider + " adapter"],
+                evidence: [(activeProfile?.provider ?? "AI") + " adapter"],
               }
             : message,
         ),
@@ -3168,12 +3295,6 @@ function Copilot({
       },
     ]);
   };
-  const clearHistory = async () => {
-    if (!device || !window.confirm(`Clear Copilot history for ${device.id}?`))
-      return;
-    await StudioService.ClearCopilotHistory(device.id);
-    setMessages([]);
-  };
   return (
     <aside
       aria-hidden={collapsed}
@@ -3185,30 +3306,111 @@ function Copilot({
         </div>
         <div className="copilot-label">
           <h3>Equipment Copilot</h3>
-          <p>Grounded in live runtime context</p>
+          <p>{sessions.find((item) => item.id === activeSessionID)?.title}</p>
         </div>
-        <Badge variant="success" className="copilot-label ml-auto">
-          {provider}
-        </Badge>
+        <select
+          className="copilot-profile-select"
+          value={activeAIID}
+          onChange={(event) => void activateProfile(event.target.value)}
+          aria-label="Active AI configuration"
+          title="Switch AI configuration for this runtime"
+        >
+          {profiles.map((profile) => (
+            <option key={profile.id} value={profile.id}>
+              {profile.name}
+            </option>
+          ))}
+        </select>
         <Button
           size="icon"
           variant="outline"
-          className="copilot-clear"
-          disabled={!messages.length || loading}
-          onClick={clearHistory}
-          title="Clear conversation history"
-          aria-label="Clear conversation history"
+          className="copilot-header-action"
+          onClick={() => setShowSessions((value) => !value)}
+          title="Conversation history"
+          aria-label="Conversation history"
         >
-          <Trash2 className="size-3.5" />
+          <MessageSquareText className="size-3.5" />
+        </Button>
+        <Button
+          size="icon"
+          variant="outline"
+          className="copilot-header-action"
+          onClick={() => void createSession()}
+          title="New conversation"
+          aria-label="New conversation"
+        >
+          <Plus className="size-3.5" />
         </Button>
       </div>
+      {showSessions && (
+        <div className="copilot-sessions">
+          <label className="copilot-session-search">
+            <Search className="size-3.5" />
+            <input
+              value={sessionSearch}
+              onChange={(event) => setSessionSearch(event.target.value)}
+              placeholder="Search conversations…"
+              autoFocus
+            />
+          </label>
+          <div className="copilot-session-list">
+            {sessions.length ? (
+              sessions.map((session) => (
+                <div
+                  key={session.id}
+                  className={cn(
+                    "copilot-session-row",
+                    session.id === activeSessionID &&
+                      "copilot-session-row-active",
+                  )}
+                >
+                  <button onClick={() => selectSession(session)}>
+                    <b>{session.title}</b>
+                    <span>
+                      {session.scope === "ALL" ? "All studio" : session.scope} ·{" "}
+                      {session.messageCount} messages
+                    </span>
+                  </button>
+                  <Button
+                    size="icon"
+                    variant="ghost"
+                    disabled={loading && session.id === activeSessionID}
+                    onClick={() => setDeleteCandidate(session)}
+                    title="Delete conversation"
+                    aria-label={`Delete ${session.title}`}
+                  >
+                    <Trash2 className="size-3.5" />
+                  </Button>
+                </div>
+              ))
+            ) : (
+              <p className="copilot-session-empty">No matching conversations</p>
+            )}
+          </div>
+        </div>
+      )}
       <div className="copilot-body">
+        <label className="copilot-scope">
+          <Search className="size-3.5" />
+          <select
+            value={scope}
+            disabled={loading}
+            onChange={(event) => void changeScope(event.target.value)}
+          >
+            <option value="ALL">All equipment & studio knowledge</option>
+            {devices.map((item) => (
+              <option key={item.id} value={item.id}>
+                {item.id} · {item.name}
+              </option>
+            ))}
+          </select>
+        </label>
         <Conversation>
           <ConversationContent>
             {messages.length === 0 ? (
               <ConversationEmptyState
                 icon={<Sparkles className="size-7 text-primary" />}
-                title="Ask about this equipment"
+                title="Ask Copilot"
                 description={
                   historyLoading
                     ? "Loading conversation history…"
@@ -3269,15 +3471,6 @@ function Copilot({
             )}
           </ConversationContent>
         </Conversation>
-        <div className="suggestions">
-          {["Explain latest message", "Trace material flow", "发送命令"].map(
-            (suggestion) => (
-              <button key={suggestion} onClick={() => setPrompt(suggestion)}>
-                {suggestion}
-              </button>
-            ),
-          )}
-        </div>
         {attachments.length > 0 && (
           <div className="attachment-tray">
             {attachments.map((item) => (
@@ -3321,17 +3514,50 @@ function Copilot({
           <PromptInputTextarea
             value={prompt}
             onChange={(event) => setPrompt(event.target.value)}
-            placeholder={`Ask about ${device?.id ?? "equipment"}…`}
+            onKeyDown={(event) => {
+              if (
+                event.key === "Enter" &&
+                !event.shiftKey &&
+                !event.nativeEvent.isComposing
+              ) {
+                event.preventDefault();
+                event.currentTarget.form?.requestSubmit();
+              }
+            }}
+            placeholder={
+              scope === "ALL"
+                ? "Ask across all devices or general topics…"
+                : `Ask about ${scope}…`
+            }
           />
           <PromptInputSubmit
             loading={loading}
             disabled={!prompt.trim() && attachments.length === 0}
           />
         </PromptInput>
-        <p className="copilot-note">
-          Up to 4 files, 5 MB each · write actions require explicit approval.
-        </p>
       </div>
+      {deleteCandidate && (
+        <div className="copilot-dialog-backdrop">
+          <div className="copilot-dialog" role="alertdialog" aria-modal="true">
+            <b>Delete conversation?</b>
+            <p>
+              “{deleteCandidate.title}” and all of its messages will be removed.
+            </p>
+            <div>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setDeleteCandidate(null)}
+              >
+                Cancel
+              </Button>
+              <Button size="sm" onClick={() => void deleteSession()}>
+                Delete
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
     </aside>
   );
 }

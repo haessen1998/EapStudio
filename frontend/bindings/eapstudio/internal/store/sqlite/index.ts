@@ -6,6 +6,7 @@ export type {
     CommandPage,
     CopilotMessage,
     CopilotPermission,
+    CopilotSession,
     EventPage,
     HistoryQuery,
     RetentionResult,

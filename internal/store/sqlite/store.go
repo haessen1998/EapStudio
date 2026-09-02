@@ -189,6 +189,17 @@ CREATE TABLE IF NOT EXISTS copilot_messages (
   created_at DATETIME NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_copilot_equipment_time ON copilot_messages(equipment_id,created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_copilot_session_time ON copilot_messages(session_id,created_at ASC);
+CREATE TABLE IF NOT EXISTS copilot_sessions (
+  id TEXT PRIMARY KEY, title TEXT NOT NULL, scope TEXT NOT NULL,
+  created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_copilot_session_updated ON copilot_sessions(updated_at DESC);
+INSERT OR IGNORE INTO copilot_sessions(id,title,scope,created_at,updated_at)
+  SELECT 'legacy-' || equipment_id, 'History · ' || equipment_id, equipment_id,
+         MIN(created_at), MAX(created_at)
+  FROM copilot_messages WHERE session_id='default' GROUP BY equipment_id;
+UPDATE copilot_messages SET session_id='legacy-' || equipment_id WHERE session_id='default';
 CREATE TABLE IF NOT EXISTS ai_profiles (
   id TEXT PRIMARY KEY, name TEXT NOT NULL, provider TEXT NOT NULL,
   base_url TEXT, model TEXT, api_key_cipher BLOB, api_key_nonce BLOB,

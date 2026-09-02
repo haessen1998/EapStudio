@@ -34,6 +34,7 @@ type StudioService struct {
 	aiMu                 sync.RWMutex
 	aiConfig             ai.Config
 	aiAPIKey             string
+	activeAIProfileID    string
 	equipmentConfigPath  string
 	equipmentConfigMu    sync.Mutex
 	ruleSource           fs.FS
@@ -66,6 +67,7 @@ type CopilotReply struct {
 
 type CopilotStreamEvent struct {
 	RequestID string        `json:"requestId"`
+	SessionID string        `json:"sessionId"`
 	Delta     string        `json:"delta,omitempty"`
 	Done      bool          `json:"done"`
 	Reply     *CopilotReply `json:"reply,omitempty"`
@@ -221,6 +223,32 @@ func (s *StudioService) ConfigureAI(config ai.Config, apiKey string) error {
 	return nil
 }
 
+func (s *StudioService) ActiveAIProfileID() string {
+	s.aiMu.RLock()
+	defer s.aiMu.RUnlock()
+	return s.activeAIProfileID
+}
+
+func (s *StudioService) ActivateAIProfile(id string) error {
+	profiles, err := s.store.AIProfiles(context.Background())
+	if err != nil {
+		return err
+	}
+	for _, value := range profiles {
+		if value.ID != id {
+			continue
+		}
+		if err := s.ConfigureAI(ai.Config{Provider: value.Provider, BaseURL: value.BaseURL, Model: value.Model}, value.APIKey); err != nil {
+			return err
+		}
+		s.aiMu.Lock()
+		s.activeAIProfileID = value.ID
+		s.aiMu.Unlock()
+		return nil
+	}
+	return fmt.Errorf("AI profile %q was not found", id)
+}
+
 type AIProfileConfig struct {
 	ID        string `json:"id"`
 	Name      string `json:"name"`
@@ -275,7 +303,7 @@ func (s *StudioService) loadStoredAIConfig() error {
 	}
 	for _, value := range profiles {
 		if value.IsDefault {
-			return s.ConfigureAI(ai.Config{Provider: value.Provider, BaseURL: value.BaseURL, Model: value.Model}, value.APIKey)
+			return s.ActivateAIProfile(value.ID)
 		}
 	}
 	return nil
@@ -620,7 +648,7 @@ func (s *StudioService) AskCopilot(question string, equipmentID string, attachme
 // AskCopilotStream starts a provider-backed streaming request and returns
 // immediately. Deltas and the final reply are emitted through
 // studio:copilot-stream so the Wails call itself never buffers the full answer.
-func (s *StudioService) AskCopilotStream(requestID string, question string, equipmentID string, attachments []ai.Attachment) error {
+func (s *StudioService) AskCopilotStream(requestID string, sessionID string, question string, scope string, attachments []ai.Attachment) error {
 	if strings.TrimSpace(requestID) == "" {
 		return fmt.Errorf("request ID is required")
 	}
@@ -630,34 +658,52 @@ func (s *StudioService) AskCopilotStream(requestID string, question string, equi
 	if err := validateAttachments(attachments); err != nil {
 		return err
 	}
-	go s.runCopilotStream(requestID, question, equipmentID, attachments)
+	if strings.TrimSpace(sessionID) == "" {
+		return fmt.Errorf("session ID is required")
+	}
+	exists, err := s.store.CopilotSessionExists(context.Background(), sessionID)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return fmt.Errorf("copilot session %q was not found", sessionID)
+	}
+	if err := s.validateCopilotScope(scope); err != nil {
+		return err
+	}
+	go s.runCopilotStream(requestID, sessionID, question, scope, attachments)
 	return nil
 }
 
-func (s *StudioService) runCopilotStream(requestID, question, equipmentID string, attachments []ai.Attachment) {
-	selected := s.selectedEquipment(equipmentID)
-	if selected == nil {
-		s.finishCopilotStream(requestID, equipmentID, CopilotReply{Answer: "当前没有已配置的设备。"})
+func (s *StudioService) runCopilotStream(requestID, sessionID, question, scope string, attachments []ai.Attachment) {
+	selected := s.selectedEquipment(scope)
+	if scope != "ALL" && selected == nil {
+		s.finishCopilotStream(requestID, sessionID, scope, CopilotReply{Answer: "指定设备不存在或已被移除。"})
 		return
 	}
-	equipmentID = selected.ID
 	storedAttachments := make([]ai.Attachment, len(attachments))
 	for index, attachment := range attachments {
 		storedAttachments[index] = ai.Attachment{Name: attachment.Name, MediaType: attachment.MediaType, Size: attachment.Size}
 	}
 	_ = s.store.RecordCopilotMessage(context.Background(), sqlitestore.CopilotMessage{
-		ID: "user-" + requestID, SessionID: "default", EquipmentID: equipmentID, Role: "user", Text: question,
+		ID: "user-" + requestID, SessionID: sessionID, EquipmentID: scope, Role: "user", Text: question,
 		Attachments: storedAttachments, CreatedAt: time.Now().UTC(),
 	})
+	_ = s.store.TouchCopilotSession(context.Background(), sessionID, copilotSessionTitle(question))
 
 	config := s.AIConfig()
 	if config.Provider == "local" || commandIntent(question) {
-		reply := s.AskCopilot(question, equipmentID, attachments)
+		var reply CopilotReply
+		if scope == "ALL" {
+			reply = s.askAllCopilot(question, attachments)
+		} else {
+			reply = s.AskCopilot(question, scope, attachments)
+		}
 		for _, chunk := range textChunks(reply.Answer, 12) {
-			s.copilotEvents <- CopilotStreamEvent{RequestID: requestID, Delta: chunk}
+			s.copilotEvents <- CopilotStreamEvent{RequestID: requestID, SessionID: sessionID, Delta: chunk}
 			time.Sleep(14 * time.Millisecond)
 		}
-		s.finishCopilotStream(requestID, equipmentID, reply)
+		s.finishCopilotStream(requestID, sessionID, scope, reply)
 		return
 	}
 
@@ -669,34 +715,67 @@ func (s *StudioService) runCopilotStream(requestID, question, equipmentID string
 	}
 	provider, err := ai.NewProvider(config, apiKey)
 	if err != nil {
-		s.finishCopilotStream(requestID, equipmentID, CopilotReply{Answer: "AI provider 配置错误：" + err.Error()})
+		s.finishCopilotStream(requestID, sessionID, scope, CopilotReply{Answer: "AI provider 配置错误：" + err.Error()})
 		return
 	}
-	contextJSON, _ := json.Marshal(selected)
-	conversation, _ := s.store.CopilotHistory(context.Background(), equipmentID, 24)
+	var runtimeContext any = selected
+	if scope == "ALL" {
+		runtimeContext = s.Snapshot()
+	}
+	contextJSON, _ := json.Marshal(runtimeContext)
+	conversation, _ := s.store.CopilotHistory(context.Background(), sessionID, 24)
 	conversationText := copilotConversationContext(conversation, "user-"+requestID)
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Second)
 	defer cancel()
 	var answer strings.Builder
 	err = provider.Stream(ctx, ai.Request{
-		System: "You are EapStudio Equipment Copilot. Answer using only the supplied runtime snapshot. Never claim a command was sent and never bypass UI permission approval.",
+		System: "You are EapStudio Copilot. Use the supplied runtime snapshot for studio and equipment facts. You may answer general non-device questions normally, but distinguish general knowledge from runtime evidence. Never claim a command was sent and never bypass UI permission approval.",
 		Prompt: conversationText + "Current user question:\n" + question + "\n\nRuntime snapshot:\n" + string(contextJSON), Attachments: attachments,
 	}, func(delta string) error {
 		answer.WriteString(delta)
-		s.copilotEvents <- CopilotStreamEvent{RequestID: requestID, Delta: delta}
+		s.copilotEvents <- CopilotStreamEvent{RequestID: requestID, SessionID: sessionID, Delta: delta}
 		return nil
 	})
 	if err != nil {
 		message := "AI provider 调用失败：" + err.Error()
 		if answer.Len() == 0 {
 			for _, chunk := range textChunks(message, 12) {
-				s.copilotEvents <- CopilotStreamEvent{RequestID: requestID, Delta: chunk}
+				s.copilotEvents <- CopilotStreamEvent{RequestID: requestID, SessionID: sessionID, Delta: chunk}
 			}
 		}
-		s.finishCopilotStream(requestID, equipmentID, CopilotReply{Answer: answer.String() + message, Evidence: []string{config.Provider + " adapter"}})
+		s.finishCopilotStream(requestID, sessionID, scope, CopilotReply{Answer: answer.String() + message, Evidence: []string{config.Provider + " adapter"}})
 		return
 	}
-	s.finishCopilotStream(requestID, equipmentID, CopilotReply{Answer: answer.String(), Evidence: []string{config.Provider + " adapter", "设备 Runtime 快照"}})
+	s.finishCopilotStream(requestID, sessionID, scope, CopilotReply{Answer: answer.String(), Evidence: []string{config.Provider + " adapter", "Runtime 快照"}})
+}
+
+func (s *StudioService) askAllCopilot(question string, attachments []ai.Attachment) CopilotReply {
+	if len(attachments) > 0 {
+		return CopilotReply{Answer: "Local grounded 是离线规则助手，不会读取图片或文件。请选择 Responses 或 Chat 配置后重试。", Evidence: []string{"local rule engine"}}
+	}
+	if commandIntent(question) {
+		return CopilotReply{Answer: "发送命令前必须把会话范围切换到一台具体设备；“全部设备”范围不会推断命令目标。", Evidence: []string{"command target guard"}}
+	}
+	snapshot := s.Snapshot()
+	online := 0
+	questionLower := strings.ToLower(question)
+	var matches []string
+	for _, value := range snapshot.Devices {
+		if value.State == "selected" {
+			online++
+		}
+		if strings.Contains(questionLower, strings.ToLower(value.ID)) || strings.Contains(questionLower, strings.ToLower(value.Name)) {
+			latest := "暂无事件"
+			if count := len(value.Events); count > 0 {
+				latest = value.Events[count-1].Name
+			}
+			matches = append(matches, fmt.Sprintf("%s（%s）状态为 %s，Profile %s，最近事件 %s", value.ID, value.Name, value.State, value.ProfileName, latest))
+		}
+	}
+	if len(matches) > 0 {
+		return CopilotReply{Answer: strings.Join(matches, "；") + "。", Evidence: []string{"全部设备 Runtime 快照", "设备 Profile 与事件记录"}}
+	}
+	return CopilotReply{Answer: fmt.Sprintf("当前 Studio 有 %d 台设备，其中 %d 台在线；已加载 %d 条 Router 规则、%d 条 Automation 规则和 %d 条告警。Local grounded 只检索本地 Runtime、历史与配置；通用知识问答请切换到 Responses 或 Chat 配置。", len(snapshot.Devices), online, len(snapshot.Routes), len(snapshot.Automations), len(snapshot.Alarms)), Evidence: []string{"全部设备 Runtime 快照", "Router / Automation 配置", "SQLite 历史"}}
 }
 
 func copilotConversationContext(history []sqlitestore.CopilotMessage, currentID string) string {
@@ -730,23 +809,20 @@ func (s *StudioService) selectedEquipment(equipmentID string) *device.Snapshot {
 			return &snapshot.Devices[index]
 		}
 	}
-	if len(snapshot.Devices) > 0 {
-		return &snapshot.Devices[0]
-	}
 	return nil
 }
 
-func (s *StudioService) finishCopilotStream(requestID, equipmentID string, reply CopilotReply) {
+func (s *StudioService) finishCopilotStream(requestID, sessionID, scope string, reply CopilotReply) {
 	permission := toStoredPermission(reply.Permission)
 	status := ""
 	if permission != nil {
 		status = "pending"
 	}
 	_ = s.store.RecordCopilotMessage(context.Background(), sqlitestore.CopilotMessage{
-		ID: "assistant-" + requestID, SessionID: "default", EquipmentID: equipmentID, Role: "assistant", Text: reply.Answer,
+		ID: "assistant-" + requestID, SessionID: sessionID, EquipmentID: scope, Role: "assistant", Text: reply.Answer,
 		Evidence: reply.Evidence, Permission: permission, PermissionStatus: status, CreatedAt: time.Now().UTC(),
 	})
-	s.copilotEvents <- CopilotStreamEvent{RequestID: requestID, Done: true, Reply: &reply}
+	s.copilotEvents <- CopilotStreamEvent{RequestID: requestID, SessionID: sessionID, Done: true, Reply: &reply}
 }
 
 func textChunks(value string, size int) []string {
@@ -769,12 +845,60 @@ func toStoredPermission(value *AIActionPermission) *sqlitestore.CopilotPermissio
 	return &sqlitestore.CopilotPermission{ID: value.ID, Tool: value.Tool, EquipmentID: value.EquipmentID, Command: value.Command, Summary: value.Summary, Risk: value.Risk, Parameters: value.Parameters}
 }
 
-func (s *StudioService) CopilotHistory(equipmentID string) ([]sqlitestore.CopilotMessage, error) {
-	return s.store.CopilotHistory(context.Background(), equipmentID, 200)
+func (s *StudioService) ListCopilotSessions(search string) ([]sqlitestore.CopilotSession, error) {
+	return s.store.CopilotSessions(context.Background(), strings.TrimSpace(search))
 }
 
-func (s *StudioService) ClearCopilotHistory(equipmentID string) error {
-	return s.store.ClearCopilotHistory(context.Background(), equipmentID)
+func (s *StudioService) CreateCopilotSession(scope string) (sqlitestore.CopilotSession, error) {
+	if scope == "" {
+		scope = "ALL"
+	}
+	if err := s.validateCopilotScope(scope); err != nil {
+		return sqlitestore.CopilotSession{}, err
+	}
+	now := time.Now().UTC()
+	value := sqlitestore.CopilotSession{ID: fmt.Sprintf("session-%d", now.UnixNano()), Title: "New conversation", Scope: scope, CreatedAt: now, UpdatedAt: now}
+	return value, s.store.CreateCopilotSession(context.Background(), value)
+}
+
+func (s *StudioService) UpdateCopilotSessionScope(sessionID, scope string) error {
+	exists, err := s.store.CopilotSessionExists(context.Background(), sessionID)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return fmt.Errorf("copilot session %q was not found", sessionID)
+	}
+	if err := s.validateCopilotScope(scope); err != nil {
+		return err
+	}
+	return s.store.UpdateCopilotSessionScope(context.Background(), sessionID, scope)
+}
+
+func (s *StudioService) DeleteCopilotSession(sessionID string) error {
+	return s.store.DeleteCopilotSession(context.Background(), sessionID)
+}
+
+func (s *StudioService) CopilotHistory(sessionID string) ([]sqlitestore.CopilotMessage, error) {
+	return s.store.CopilotHistory(context.Background(), sessionID, 200)
+}
+
+func (s *StudioService) validateCopilotScope(scope string) error {
+	if scope == "ALL" {
+		return nil
+	}
+	if s.selectedEquipment(scope) == nil {
+		return fmt.Errorf("equipment %q was not found", scope)
+	}
+	return nil
+}
+
+func copilotSessionTitle(question string) string {
+	value := []rune(strings.TrimSpace(question))
+	if len(value) > 32 {
+		value = append(value[:32], '…')
+	}
+	return string(value)
 }
 
 func validateAttachments(attachments []ai.Attachment) error {

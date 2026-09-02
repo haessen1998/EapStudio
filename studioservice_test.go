@@ -224,7 +224,11 @@ func TestCopilotStreamPersistsConversation(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer service.close()
-	if err := service.AskCopilotStream("request-1", "设备状态", "ETCHER-01", nil); err != nil {
+	session, err := service.CreateCopilotSession("ETCHER-01")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.AskCopilotStream("request-1", session.ID, "设备状态", "ETCHER-01", nil); err != nil {
 		t.Fatal(err)
 	}
 	var streamed strings.Builder
@@ -240,7 +244,7 @@ func TestCopilotStreamPersistsConversation(t *testing.T) {
 				if value.Reply == nil || streamed.String() != value.Reply.Answer {
 					t.Fatalf("streamed=%q reply=%#v", streamed.String(), value.Reply)
 				}
-				history, err := service.CopilotHistory("ETCHER-01")
+				history, err := service.CopilotHistory(session.ID)
 				if err != nil || len(history) != 2 || history[0].Role != "user" || history[1].Role != "assistant" {
 					t.Fatalf("history=%#v err=%v", history, err)
 				}

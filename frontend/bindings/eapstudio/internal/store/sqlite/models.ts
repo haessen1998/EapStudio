@@ -55,6 +55,15 @@ export interface CopilotPermission {
     "parameters": { [_ in string]?: any } | null;
 }
 
+export interface CopilotSession {
+    "id": string;
+    "title": string;
+    "scope": string;
+    "createdAt": string;
+    "updatedAt": string;
+    "messageCount": number;
+}
+
 export interface EventPage {
     "items": event$0.Event[] | null;
     "total": number;

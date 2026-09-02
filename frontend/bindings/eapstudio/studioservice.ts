@@ -23,6 +23,14 @@ export function AIConfig(): $CancellablePromise<ai$0.Config> {
     return $Call.ByID(1418556419);
 }
 
+export function ActivateAIProfile(id: string): $CancellablePromise<void> {
+    return $Call.ByID(2454867269, id);
+}
+
+export function ActiveAIProfileID(): $CancellablePromise<string> {
+    return $Call.ByID(2288781169);
+}
+
 export function ApplyHistoryRetention(days: number): $CancellablePromise<sqlite$0.RetentionResult> {
     return $Call.ByID(2964914099, days);
 }
@@ -40,12 +48,8 @@ export function AskCopilot(question: string, equipmentID: string, attachments: a
  * immediately. Deltas and the final reply are emitted through
  * studio:copilot-stream so the Wails call itself never buffers the full answer.
  */
-export function AskCopilotStream(requestID: string, question: string, equipmentID: string, attachments: ai$0.Attachment[] | null): $CancellablePromise<void> {
-    return $Call.ByID(159554888, requestID, question, equipmentID, attachments);
-}
-
-export function ClearCopilotHistory(equipmentID: string): $CancellablePromise<void> {
-    return $Call.ByID(3117216080, equipmentID);
+export function AskCopilotStream(requestID: string, sessionID: string, question: string, scope: string, attachments: ai$0.Attachment[] | null): $CancellablePromise<void> {
+    return $Call.ByID(159554888, requestID, sessionID, question, scope, attachments);
 }
 
 export function CompareEquipmentConfig(): $CancellablePromise<$models.EquipmentConfigComparison> {
@@ -60,8 +64,16 @@ export function ConnectDevice(id: string): $CancellablePromise<void> {
     return $Call.ByID(3173062369, id);
 }
 
-export function CopilotHistory(equipmentID: string): $CancellablePromise<sqlite$0.CopilotMessage[] | null> {
-    return $Call.ByID(63581007, equipmentID);
+export function CopilotHistory(sessionID: string): $CancellablePromise<sqlite$0.CopilotMessage[] | null> {
+    return $Call.ByID(63581007, sessionID);
+}
+
+export function CreateCopilotSession(scope: string): $CancellablePromise<sqlite$0.CopilotSession> {
+    return $Call.ByID(1989280319, scope);
+}
+
+export function DeleteCopilotSession(sessionID: string): $CancellablePromise<void> {
+    return $Call.ByID(454030280, sessionID);
 }
 
 export function DisconnectDevice(id: string): $CancellablePromise<void> {
@@ -78,6 +90,10 @@ export function EquipmentConfigPath(): $CancellablePromise<string> {
 
 export function ListAIProfiles(): $CancellablePromise<$models.AIProfileConfig[] | null> {
     return $Call.ByID(874361723);
+}
+
+export function ListCopilotSessions(search: string): $CancellablePromise<sqlite$0.CopilotSession[] | null> {
+    return $Call.ByID(727334084, search);
 }
 
 export function MergePackagedDemoDevices(): $CancellablePromise<$models.EquipmentMergeResult> {
@@ -122,4 +138,8 @@ export function Snapshot(): $CancellablePromise<$models.StudioSnapshot> {
 
 export function TestAIConfiguration(config: ai$0.Config, apiKey: string): $CancellablePromise<string> {
     return $Call.ByID(2294031345, config, apiKey);
+}
+
+export function UpdateCopilotSessionScope(sessionID: string, scope: string): $CancellablePromise<void> {
+    return $Call.ByID(3286257558, sessionID, scope);
 }

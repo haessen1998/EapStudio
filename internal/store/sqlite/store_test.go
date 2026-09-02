@@ -63,27 +63,30 @@ func TestCopilotHistoryPersistsMessagesAndPermissionState(t *testing.T) {
 	}
 	defer store.Close()
 	ctx := context.Background()
-	permission := &CopilotPermission{ID: "permission-1", Tool: "send.command", EquipmentID: "AOI-01", Command: "send.recipe"}
-	if err := store.RecordCopilotMessage(ctx, CopilotMessage{ID: "user-1", EquipmentID: "AOI-01", Role: "user", Text: "status", Attachments: []ai.Attachment{{Name: "manual.txt", MediaType: "text/plain", Size: 10}}}); err != nil {
+	if err := store.CreateCopilotSession(ctx, CopilotSession{ID: "session-1", Title: "New conversation", Scope: "AOI-01"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.RecordCopilotMessage(ctx, CopilotMessage{ID: "assistant-1", EquipmentID: "AOI-01", Role: "assistant", Text: "selected", Evidence: []string{"runtime"}, Permission: permission, PermissionStatus: "pending"}); err != nil {
+	permission := &CopilotPermission{ID: "permission-1", Tool: "send.command", EquipmentID: "AOI-01", Command: "send.recipe"}
+	if err := store.RecordCopilotMessage(ctx, CopilotMessage{ID: "user-1", SessionID: "session-1", EquipmentID: "AOI-01", Role: "user", Text: "status", Attachments: []ai.Attachment{{Name: "manual.txt", MediaType: "text/plain", Size: 10}}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RecordCopilotMessage(ctx, CopilotMessage{ID: "assistant-1", SessionID: "session-1", EquipmentID: "AOI-01", Role: "assistant", Text: "selected", Evidence: []string{"runtime"}, Permission: permission, PermissionStatus: "pending"}); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.UpdateCopilotPermission(ctx, permission.ID, "allowed"); err != nil {
 		t.Fatal(err)
 	}
-	history, err := store.CopilotHistory(ctx, "AOI-01", 20)
+	history, err := store.CopilotHistory(ctx, "session-1", 20)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(history) != 2 || history[0].Text != "status" || history[1].PermissionStatus != "allowed" || history[1].Permission == nil {
 		t.Fatalf("history = %#v", history)
 	}
-	if err := store.ClearCopilotHistory(ctx, "AOI-01"); err != nil {
+	if err := store.DeleteCopilotSession(ctx, "session-1"); err != nil {
 		t.Fatal(err)
 	}
-	history, err = store.CopilotHistory(ctx, "AOI-01", 20)
+	history, err = store.CopilotHistory(ctx, "session-1", 20)
 	if err != nil || len(history) != 0 {
 		t.Fatalf("cleared history = %#v, err = %v", history, err)
 	}

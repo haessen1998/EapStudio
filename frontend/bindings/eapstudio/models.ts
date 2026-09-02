@@ -47,6 +47,7 @@ export interface CopilotReply {
 
 export interface CopilotStreamEvent {
     "requestId": string;
+    "sessionId": string;
     "delta"?: string;
     "done": boolean;
     "reply"?: CopilotReply | null;
