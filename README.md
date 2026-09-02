@@ -32,7 +32,7 @@ isolated DeviceRuntime
        Mock MQ     SQLite history
 ```
 
-Four simulator-backed device instances demonstrate equipment-family isolation: `ETCHER-01` and `ETCHER-02` share `demo-etcher-x100`, `AOI-01` uses `demo-aoi-v200`, and `OVEN-01` uses `demo-oven-t300`. Each retains independent connection state, message queues, traces, and event pipelines.
+The default workspace contains three networked Equipment Twin runtimes: `ETCHER-01`, `AOI-01`, and `OVEN-01`. They bind real passive HSMS ports so an external EAP or control application can connect to the simulated factory line. A workspace may instead contain only production controller runtimes, or any mixture of controller and Equipment Twin roles.
 
 ## Run
 
@@ -59,18 +59,18 @@ npm run build
 
 ## Configuration
 
-- `configs/devices.yaml` is the packaged equipment template. On first run it is copied to the OS user config directory as `EapStudio/devices.yaml`; that runtime file is the durable source for equipment order and definitions.
+- `configs/devices.yaml` is the packaged three-twin template. Runtime configuration lives under `EapStudio/workspaces/<workspace-id>/`.
 - `profiles/demo/etcher-x100.yaml` defines variables, reports, events, and field mappings for a model.
 - `configs/routes.yaml` maps canonical event-name and equipment-ID glob selectors to sinks.
 - `configs/automations.yaml` maps Event and equipment glob selectors to Commands and parameter projections.
 
 The sample routes include shared material flow, Etcher production, AOI quality, an `AOI-01` exact exception, Oven thermal events, and a catch-all SQLite history route. The sample automations demonstrate common material-arrival recipe selection plus AOI review and Oven temperature-deviation actions.
 
-At first production startup, `routes.yaml`, `automations.yaml`, and packaged Profiles are copied beside the runtime `devices.yaml` without overwriting existing runtime edits. Rules are watched and atomically swapped within about 1.5 seconds. Equipment changes and Profile Workbench saves hot-rebuild only affected DeviceRuntime instances; unchanged equipment keeps its connection and live buffers.
+Each workspace owns `devices.yaml`, `routes.yaml`, `automations.yaml`, `profiles/`, and `events/`. The active workspace is persisted and can be switched from the sidebar footer or managed in Settings. New workspaces start from the packaged three-twin template. On upgrade, the previous flat runtime configuration is copied into the default workspace and retained. Rules are watched and atomically swapped within about 1.5 seconds. Equipment changes and Profile Workbench saves hot-rebuild only affected DeviceRuntime instances; a previously connected affected runtime reconnects after reload.
 
 Keep equipment identity out of the canonical name: use `wafer.started` with `equipmentId: AOI-01`, not `AOI.01.wafer.started`. A common route can select `names: [wafer.*]` plus `equipment: [AOI-*]`, while another rule selects `equipment: [AOI-01]` for additional sinks. Every matching route contributes sinks and duplicate sink deliveries are removed. Automation rules are additive, so common and device-specific rules may both create Commands.
 
-The demo Profile declares reverse-mapped canonical scenarios and arbitrary SxFy templates. `material-arrival` and `wafer-start` use `GenericGemAdapter.BuildEvent` to generate S6F11 CEID/RPTID/value structures. `alarm-raised`, `alarm-cleared`, `remote-command`, and `recipe-download` demonstrate inbound S5F1 plus outbound S2F41 and S7F3 without hard-coded simulator methods.
+Direction has one stable meaning independent of deployment topology: Profile `commands` are always **Host → Equipment**, while top-level Profile `scenarios` are always **Equipment → Host**. `material-arrival` and `wafer-start` use `GenericGemAdapter.BuildEvent` to generate S6F11 CEID/RPTID/value structures; alarm scenarios demonstrate S5F1. Legacy `simulator.scenarios` profiles are migrated to top-level `scenarios`. Commands may be created by Automation or sent manually from Device detail. On a controller runtime a scenario is injected into the local parsing pipeline; on an Equipment Twin it is transmitted over its real HSMS connection.
 
 Protocol traces, including SML and raw hex when available, are queued from the fast path into `protocol_traces`. Canonical events reach `domain_events` through the async Router sink; commands and the alarm projection use separate tables in the same WAL-enabled SQLite database. The real `file-events` sink also appends matching canonical events as JSONL under the runtime config directory. This keeps writes isolated while preserving correlation queries across one durable history.
 
@@ -84,7 +84,7 @@ Protocol traces, including SML and raw hex when available, are queued from the f
 
 The included automation demonstrates `material.arrived → send.recipe → recipe.sent`. The incoming S6F11 still receives S6F12 on the protocol fast path before Automation, routing, or AI work begins.
 
-To connect real equipment, change a device's `driver` from `simulator` to `go-secs` and set its HSMS host, port, mode, and session ID. The Device detail `Host → Equipment` panel can send a validated Profile command or one complete raw SML primary. Both create a one-shot permission card; a W-bit primary waits up to the selected timeout and displays its secondary reply. Request/reply traces are also written to Messages and SQLite. Simulator `Emit inbound` remains a separate Equipment → Host test path. SDK types remain confined to `internal/driver/secs`.
+A `controller` runtime uses `go-secs` to connect to real equipment and sends Profile commands. An `equipment-simulator` runtime uses the same real transport in the opposite application role, normally passive on `0.0.0.0:<port>`, responds to Host primaries, and emits Profile scenarios. Connect-attempt and T3 reply timeouts are configured per device and shown in Device detail. Request/reply traces are written to Messages and SQLite. SDK types remain confined to `internal/driver/secs`.
 
 ## Project boundaries
 
@@ -101,7 +101,7 @@ To connect real equipment, change a device's `driver` from `simulator` to `go-se
 
 The local Copilot mode is a deterministic Runtime inspector rather than a language model. Responses and Chat configurations use application-controlled typed read tools (`runtime.snapshot`, message/event/command history, and Profile inventory) before model inference; tool results are visible in the conversation. Credentials and model calls stay in Go, outside the frontend and protocol response path.
 
-The Workbench lists writable runtime Profiles, applies strict schema/compiler validation, previews Canonical Event → Adapter.BuildEvent → SECS → Adapter.Parse round trips, and hot reloads devices using a saved Profile. Device detail exposes connection attempts, lifecycle detail, IN/OUT counts, parse failures, queue drops, command failures, and the last transport error.
+The Workbench lists writable workspace Profiles, applies strict schema/compiler validation, previews Canonical Event → Adapter.BuildEvent → SECS → Adapter.Parse round trips, and hot reloads devices using a saved Profile. The SECS Message Lab contains the complete S1F1 through S17F13 base matrix plus common higher GEM functions such as S2F41, known GEM descriptions, an SML editor, target-runtime selection, permission-gated transmission, secondary-reply display, and promotion of a proven SML message into a Profile command or scenario. Device detail exposes connection attempts, lifecycle detail, IN/OUT counts, parse failures, queue drops, command failures, timeouts, and the last transport error.
 
 Equipment write policy is persisted in SQLite. It supports deny-all or allowlist-plus-explicit-approval, equipment/command glob allowlists, and approval expiry. It applies to Profile commands, raw `SxFy` sends, and AI actions and never auto-approves a write. Permission cards show a parameter diff against the previous command of the same type; command execution outcomes remain queryable on the Commands page and through SQLite history.
 

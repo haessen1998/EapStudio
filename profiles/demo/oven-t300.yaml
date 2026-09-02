@@ -61,17 +61,16 @@ spec:
       successEvent: batch.stopped
       failureEvent: batch.stop_failed
       successAck: 0
-  simulator:
-    scenarios:
-      material-arrival:
-        displayName: Oven material arrival
-        event: material.arrived
-        data: { materialId: "CARRIER-${sequence}", recipeId: BAKE-420, portId: LOAD }
-      batch-started:
-        displayName: Batch started
-        event: batch.started
-        data: { batchId: "BATCH-${sequence}", recipe: BAKE-420, temperatureC: 420.0 }
-      temperature-deviation:
-        displayName: Temperature deviation
-        event: temperature.deviated
-        data: { batchId: "BATCH-${sequence}", recipe: BAKE-420, temperatureC: 438.5 }
+  scenarios:
+    material-arrival:
+      displayName: Oven material arrival
+      event: material.arrived
+      data: { materialId: "CARRIER-${sequence}", recipeId: BAKE-420, portId: LOAD }
+    batch-started:
+      displayName: Batch started
+      event: batch.started
+      data: { batchId: "BATCH-${sequence}", recipe: BAKE-420, temperatureC: 420.0 }
+    temperature-deviation:
+      displayName: Temperature deviation
+      event: temperature.deviated
+      data: { batchId: "BATCH-${sequence}", recipe: BAKE-420, temperatureC: 438.5 }

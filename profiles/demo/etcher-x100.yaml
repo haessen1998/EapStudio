@@ -85,89 +85,58 @@ spec:
       failureEvent: recipe.failed
       successAck: 0
 
-  simulator:
-    scenarios:
-      material-arrival:
-        displayName: Material arrival
-        event: material.arrived
-        data:
-          materialId: MAT-${sequence}
-          recipeId: ETCH-A
-          portId: LP01
-      wafer-start:
-        displayName: Wafer start
-        event: wafer.started
-        data:
-          lotId: LOT-${sequence}
-          waferId: WAFER-${sequence}
-          recipe: ETCH-A
-      alarm-raised:
-        displayName: Alarm raised
-        direction: inbound
-        message:
-          stream: 5
-          function: 1
-          wait: true
-          sml: |
-            S5F1 W
-            <L[3]
-              <B 128>
-              <U4 7001>
-              <A "Chamber pressure high">
-            >
-            .
-          fields:
-            alarmId: "7001"
-            code: "128"
-            text: Chamber pressure high
-            severity: critical
-            active: true
-      alarm-cleared:
-        displayName: Alarm cleared
-        direction: inbound
-        message:
-          stream: 5
-          function: 1
-          wait: true
-          sml: |
-            S5F1 W
-            <L[3]
-              <B 0>
-              <U4 7001>
-              <A "Chamber pressure normal">
-            >
-            .
-          fields:
-            alarmId: "7001"
-            code: "0"
-            text: Chamber pressure normal
-            severity: critical
-            active: false
-      remote-command:
-        displayName: Execute remote command
-        direction: outbound
-        message:
-          stream: 2
-          function: 41
-          wait: true
-          sml: |
-            S2F41 W
-            <L[2]
-              <A "START">
-              <L[0]>
-            >
-            .
-      recipe-download:
-        displayName: Download recipe
-        direction: outbound
-        message:
-          stream: 7
-          function: 3
-          wait: true
-          sml: |
-            S7F3 W
-            <L[2]
-              <A "ETCH-A">
-              <B 01 02 03 04>
-            >
-            .
+  scenarios:
+    material-arrival:
+      displayName: Material arrival
+      event: material.arrived
+      data:
+        materialId: MAT-${sequence}
+        recipeId: ETCH-A
+        portId: LP01
+    wafer-start:
+      displayName: Wafer start
+      event: wafer.started
+      data:
+        lotId: LOT-${sequence}
+        waferId: WAFER-${sequence}
+        recipe: ETCH-A
+    alarm-raised:
+      displayName: Alarm raised
+      message:
+        stream: 5
+        function: 1
+        wait: true
+        sml: |
+          S5F1 W
+          <L[3]
+            <B 128>
+            <U4 7001>
+            <A "Chamber pressure high">
+          >
+          .
+        fields:
+          alarmId: "7001"
+          code: "128"
+          text: Chamber pressure high
+          severity: critical
+          active: true
+    alarm-cleared:
+      displayName: Alarm cleared
+      message:
+        stream: 5
+        function: 1
+        wait: true
+        sml: |
+          S5F1 W
+          <L[3]
+            <B 0>
+            <U4 7001>
+            <A "Chamber pressure normal">
+          >
+          .
+        fields:
+          alarmId: "7001"
+          code: "0"
+          text: Chamber pressure normal
+          severity: critical
+          active: false

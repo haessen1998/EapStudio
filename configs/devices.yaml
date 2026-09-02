@@ -5,27 +5,16 @@ devices:
     profile: profiles/demo/etcher-x100.yaml
     adapter: generic-gem
     driver: simulator
+    role: equipment-simulator
     autoConnect: true
     connection:
       protocol: hsms-ss
-      mode: active
-      host: 127.0.0.1
+      mode: passive
+      host: 0.0.0.0
       port: 5001
       sessionId: 0
-
-  - id: ETCHER-02
-    badge: "02"
-    name: Etcher #2
-    profile: profiles/demo/etcher-x100.yaml
-    adapter: generic-gem
-    driver: simulator
-    autoConnect: true
-    connection:
-      protocol: hsms-ss
-      mode: active
-      host: 127.0.0.1
-      port: 5002
-      sessionId: 0
+      connectTimeoutSeconds: 10
+      replyTimeoutSeconds: 45
 
   - id: AOI-01
     badge: AOI
@@ -33,13 +22,16 @@ devices:
     profile: profiles/demo/aoi-v200.yaml
     adapter: demo-aoi-v200
     driver: simulator
+    role: equipment-simulator
     autoConnect: true
     connection:
       protocol: hsms-ss
-      mode: active
-      host: 127.0.0.1
+      mode: passive
+      host: 0.0.0.0
       port: 5101
       sessionId: 0
+      connectTimeoutSeconds: 10
+      replyTimeoutSeconds: 45
 
   - id: OVEN-01
     badge: OVN
@@ -47,10 +39,13 @@ devices:
     profile: profiles/demo/oven-t300.yaml
     adapter: demo-oven-t300
     driver: simulator
+    role: equipment-simulator
     autoConnect: true
     connection:
       protocol: hsms-ss
-      mode: active
-      host: 127.0.0.1
+      mode: passive
+      host: 0.0.0.0
       port: 5201
       sessionId: 0
+      connectTimeoutSeconds: 10
+      replyTimeoutSeconds: 45

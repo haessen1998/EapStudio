@@ -82,6 +82,93 @@ func snapshotDevice(t *testing.T, service *StudioService, id string) device.Snap
 	return device.Snapshot{}
 }
 
+func TestWorkspaceInitializationCreationAndHotSwitch(t *testing.T) {
+	configRoot := t.TempDir()
+	workspaceRoot, activeID, directory, err := initializeWorkspaces(os.DirFS("."), configRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if activeID != "default" {
+		t.Fatalf("active workspace = %q", activeID)
+	}
+	for _, path := range []string{"devices.yaml", "routes.yaml", "automations.yaml", "profiles/demo/etcher-x100.yaml"} {
+		if _, err := os.Stat(filepath.Join(directory, filepath.FromSlash(path))); err != nil {
+			t.Fatalf("workspace file %s: %v", path, err)
+		}
+	}
+	config, err := device.LoadConfig(os.DirFS(directory), "devices.yaml")
+	if err != nil || len(config.Devices) != 3 {
+		t.Fatalf("default workspace devices = %#v, err = %v", config.Devices, err)
+	}
+	service, err := newStudioServiceWithConfig(os.DirFS("."), filepath.Join(configRoot, "history.db"), config, filepath.Join(directory, "devices.yaml"), os.DirFS(directory), "routes.yaml", "automations.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer service.close()
+	service.workspaceRoot, service.activeWorkspaceID = workspaceRoot, activeID
+	created, err := service.CreateWorkspace("Mixed Factory")
+	if err != nil {
+		t.Fatal(err)
+	}
+	selected, err := service.SwitchWorkspace(created.ID)
+	if err != nil || !selected.Active || service.activeWorkspaceID != created.ID {
+		t.Fatalf("selected workspace = %#v, err = %v", selected, err)
+	}
+	if err := service.DeleteWorkspace(created.ID); err == nil {
+		t.Fatal("active workspace deletion should be rejected")
+	}
+	if err := service.DeleteWorkspace("default"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestWorkspaceInitializationPreservesPartialLegacyRuntime(t *testing.T) {
+	configRoot := t.TempDir()
+	packaged, err := device.LoadConfig(os.DirFS("."), "configs/devices.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy := packaged.Devices[0]
+	legacy.ID = "C6-340"
+	legacy.Name = "Production C6-340"
+	legacy.Driver = "go-secs"
+	legacy.Role = "controller"
+	legacy.Connection.Mode = "active"
+	legacy.Connection.Host = "192.0.2.34"
+	if err := device.SaveConfig(filepath.Join(configRoot, "devices.yaml"), device.Config{Devices: []device.Definition{legacy}}); err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, directory, err := initializeWorkspaces(os.DirFS("."), configRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	migrated, err := device.LoadConfig(os.DirFS(directory), "devices.yaml")
+	if err != nil || len(migrated.Devices) != 1 || migrated.Devices[0].ID != "C6-340" {
+		t.Fatalf("legacy devices were not preserved: %#v, err=%v", migrated.Devices, err)
+	}
+	for _, path := range []string{"routes.yaml", "automations.yaml", "profiles/demo/etcher-x100.yaml"} {
+		if _, err := os.Stat(filepath.Join(directory, filepath.FromSlash(path))); err != nil {
+			t.Fatalf("packaged fallback %s: %v", path, err)
+		}
+	}
+}
+
+func TestMessageCatalogCoversS1F1ThroughS17F13(t *testing.T) {
+	catalog := (&StudioService{}).MessageCatalog()
+	if len(catalog) < 17*13 {
+		t.Fatalf("catalog size = %d, want at least %d", len(catalog), 17*13)
+	}
+	foundS2F41, foundS17F13 := false, false
+	for _, item := range catalog {
+		foundS2F41 = foundS2F41 || item.Stream == 2 && item.Function == 41
+		foundS17F13 = foundS17F13 || item.Stream == 17 && item.Function == 13
+	}
+	if !foundS2F41 || !foundS17F13 {
+		t.Fatalf("catalog missing required messages: S2F41=%v S17F13=%v", foundS2F41, foundS17F13)
+	}
+}
+
 func TestConfigureAIKeepsAPIKeyInBackendOnly(t *testing.T) {
 	service, err := newStudioService(os.DirFS("."), t.TempDir()+"/eapstudio-test.db")
 	if err != nil {
@@ -101,7 +188,7 @@ func TestConfigureAIKeepsAPIKeyInBackendOnly(t *testing.T) {
 	}
 }
 
-func TestDemoPipelineRunsForTwoDevices(t *testing.T) {
+func TestDemoPipelineRunsForThreeDevices(t *testing.T) {
 	service, err := newStudioService(os.DirFS("."), t.TempDir()+"/eapstudio-test.db")
 	if err != nil {
 		t.Fatal(err)
@@ -109,17 +196,16 @@ func TestDemoPipelineRunsForTwoDevices(t *testing.T) {
 	service.start(context.Background())
 	defer func() {
 		_ = service.DisconnectDevice("ETCHER-01")
-		_ = service.DisconnectDevice("ETCHER-02")
 		_ = service.close()
 	}()
 
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		snapshot := service.Snapshot()
-		if len(snapshot.Devices) == 4 && len(snapshot.Deliveries) >= 16 {
+		if len(snapshot.Devices) == 3 && len(snapshot.Deliveries) >= 12 {
 			ready := true
 			for _, value := range snapshot.Devices {
-				ready = ready && len(value.Commands) > 0
+				ready = ready && len(value.Commands) > 0 && value.Commands[0].Status == "succeeded" && len(value.Events) > 1
 			}
 			if !ready {
 				time.Sleep(25 * time.Millisecond)
@@ -149,7 +235,7 @@ func TestDemoPipelineRunsForTwoDevices(t *testing.T) {
 	t.Fatalf("pipeline did not produce events in time: %#v", service.Snapshot())
 }
 
-func TestSimulatorSupportsAlarmAndArbitraryOutboundMessages(t *testing.T) {
+func TestSimulatorSupportsEquipmentAlarmMessages(t *testing.T) {
 	service, err := newStudioService(os.DirFS("."), t.TempDir()+"/eapstudio-test.db")
 	if err != nil {
 		t.Fatal(err)
@@ -162,9 +248,6 @@ func TestSimulatorSupportsAlarmAndArbitraryOutboundMessages(t *testing.T) {
 	if err := service.EmitSimulatorScenario("ETCHER-01", "alarm-raised"); err != nil {
 		t.Fatal(err)
 	}
-	if err := service.EmitSimulatorScenario("ETCHER-01", "remote-command"); err != nil {
-		t.Fatal(err)
-	}
 
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
@@ -174,7 +257,7 @@ func TestSimulatorSupportsAlarmAndArbitraryOutboundMessages(t *testing.T) {
 		for _, message := range device.Messages {
 			seen[message.Name()] = true
 		}
-		if seen["S5F1"] && seen["S5F2"] && seen["S2F41"] && seen["S2F42"] && len(snapshot.Alarms) == 1 {
+		if seen["S5F1"] && seen["S5F2"] && len(snapshot.Alarms) == 1 {
 			for _, message := range device.Messages {
 				if message.RawHex == "" {
 					t.Fatalf("message %s has no raw HSMS frame", message.Name())

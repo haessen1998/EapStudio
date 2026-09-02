@@ -43,7 +43,7 @@ func TestMigratePackagedAdaptersOnlyUpgradesMatchingGenericDemo(t *testing.T) {
 		{ID: "AOI-01", Profile: "profiles/demo/aoi.yaml", Adapter: "generic-gem"},
 		{ID: "OVEN-01", Profile: "profiles/demo/oven.yaml", Adapter: "custom-oven"},
 	}}
-	migrated, changed, err := migratePackagedAdapters(source, "configs/devices.yaml", runtime)
+	migrated, changed, err := MigratePackagedAdapters(source, "configs/devices.yaml", runtime)
 	if err != nil {
 		t.Fatal(err)
 	}

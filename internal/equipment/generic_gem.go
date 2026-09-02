@@ -88,6 +88,26 @@ func (GenericGemAdapter) BuildCommand(_ context.Context, value command.Command, 
 	if !ok {
 		return driver.Message{}, fmt.Errorf("profile %q does not define command %q", compiled.Metadata.Name, value.Name)
 	}
+	if strings.TrimSpace(definition.SML) != "" {
+		text := definition.SML
+		for _, name := range definition.Parameters {
+			parameter, exists := value.Parameters[name]
+			if !exists {
+				return driver.Message{}, fmt.Errorf("command %q requires parameter %q", value.Name, name)
+			}
+			text = strings.ReplaceAll(text, "${"+name+"}", escapeSML(fmt.Sprint(parameter)))
+		}
+		message, err := driver.ParseOutboundSML(text)
+		if err != nil {
+			return driver.Message{}, fmt.Errorf("command %q SML: %w", value.Name, err)
+		}
+		if message.Stream != definition.Stream || message.Function != definition.Function || message.Wait != definition.Wait {
+			return driver.Message{}, fmt.Errorf("command %q SML header does not match its stream/function/wait definition", value.Name)
+		}
+		message.EquipmentID = value.EquipmentID
+		message.Metadata = map[string]string{"commandId": value.ID, "commandName": value.Name}
+		return message, nil
+	}
 	var body strings.Builder
 	fmt.Fprintf(&body, "S%dF%d", definition.Stream, definition.Function)
 	if definition.Wait {

@@ -117,6 +117,23 @@ export interface EquipmentMessageRequest {
     "timeoutSeconds": number;
 }
 
+export interface MessageCatalogItem {
+    "stream": number;
+    "function": number;
+    "name": string;
+    "description": string;
+    "primary": boolean;
+    "sml": string;
+}
+
+export interface MessageTemplateSaveRequest {
+    "profilePath": string;
+    "kind": string;
+    "name": string;
+    "displayName": string;
+    "sml": string;
+}
+
 export interface ParameterChange {
     "before"?: any;
     "after": any;
@@ -175,4 +192,11 @@ export interface StudioSnapshot {
     "alarms": sqlite$0.Alarm[] | null;
     "storage": sqlite$0.Stats;
     "generated": string;
+}
+
+export interface WorkspaceSummary {
+    "id": string;
+    "name": string;
+    "path": string;
+    "active": boolean;
 }

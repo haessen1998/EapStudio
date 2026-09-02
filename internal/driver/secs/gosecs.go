@@ -3,6 +3,7 @@ package secs
 import (
 	"context"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -25,7 +26,17 @@ type GoSecsDriver struct {
 }
 
 func NewGoSecsDriver(config ConnectionConfig) (*GoSecsDriver, error) {
-	options := []hsmsss.Option{hsmsss.WithActive(), hsmsss.WithConnectionOption(hsms.WithSessionID(config.SessionID))}
+	connectionOptions := []hsms.ConnOption{hsms.WithSessionID(config.SessionID)}
+	if config.ReplyTimeout > 0 {
+		connectionOptions = append(connectionOptions, hsms.WithT3(config.ReplyTimeout))
+	}
+	options := []hsmsss.Option{hsmsss.WithActive()}
+	for _, option := range connectionOptions {
+		options = append(options, hsmsss.WithConnectionOption(option))
+	}
+	if config.ConnectTimeout > 0 {
+		options = append(options, hsmsss.WithConnectTimeout(config.ConnectTimeout))
+	}
 	if strings.EqualFold(config.Mode, "passive") {
 		options[0] = hsmsss.WithPassive()
 	}
@@ -40,14 +51,37 @@ func NewGoSecsDriver(config ConnectionConfig) (*GoSecsDriver, error) {
 	driver := &GoSecsDriver{config: config, connection: connection, state: StateDisconnected}
 	connection.AddDataMessageHandler(driver.receive)
 	connection.SubscribeLifecycle(func(value hsms.LifecycleEvent) {
-		driver.updateState(mapSDKState(connection.State()), fmt.Sprint(value.Cause))
+		detail := fmt.Sprintf("%s: %s → %s", value.Cause, value.Previous, value.Current)
+		state := mapSDKState(value.Current)
+		if value.Current == hsms.NotConnectedState && value.Cause != hsms.CauseLocalClose {
+			// OpenBackground owns the reconnect supervisor. A transport drop means the
+			// driver is reconnecting, not closed and ready for another Open call.
+			state = StateConnecting
+		}
+		driver.updateState(state, detail)
 	})
 	return driver, nil
 }
 
 func (d *GoSecsDriver) Open(ctx context.Context) error {
-	d.updateState(StateConnecting, "opening HSMS session")
+	state := d.connection.State()
+	if state != hsms.NotConnectedState {
+		d.updateState(mapSDKState(state), "connection already open")
+		return nil
+	}
+	detail := fmt.Sprintf("opening HSMS %s session", strings.ToLower(d.config.Mode))
+	if d.config.ConnectTimeout > 0 || d.config.ReplyTimeout > 0 {
+		detail += fmt.Sprintf(" (connect %s, T3 %s)", d.config.ConnectTimeout, d.config.ReplyTimeout)
+	}
+	d.updateState(StateConnecting, detail)
 	if err := d.connection.Open(ctx, hsms.OpenBackground); err != nil {
+		if errors.Is(err, hsms.ErrAlreadyOpen) {
+			// The SDK deliberately reports ErrAlreadyOpen while its supervisor is
+			// reconnecting even though the instantaneous FSM state is NotConnected.
+			// Treat Connect as idempotent and let that supervisor finish its work.
+			d.updateState(StateConnecting, "HSMS lifecycle is already open; waiting for selection")
+			return nil
+		}
 		d.updateState(StateError, err.Error())
 		return err
 	}
@@ -118,8 +152,19 @@ func (d *GoSecsDriver) Reply(ctx context.Context, request Message, response Mess
 		return fmt.Errorf("request is not backed by an HSMS message")
 	}
 	item := secs2.NewEmptyItem()
-	if response.Stream == 6 && response.Function == 12 {
-		item = secs2.B(byte(0))
+	if strings.TrimSpace(response.SML) != "" {
+		parsed, err := sml.Parse(response.SML)
+		if err != nil {
+			return fmt.Errorf("parse reply SML: %w", err)
+		}
+		if len(parsed) != 1 {
+			return fmt.Errorf("reply SML must contain exactly one message")
+		}
+		var itemErr error
+		item, itemErr = parsed[0].Item()
+		if itemErr != nil {
+			return itemErr
+		}
 	}
 	return d.connection.ReplyDataMessage(ctx, raw, item)
 }
@@ -175,7 +220,7 @@ func fromSDK(message *hsms.DataMessage) Message {
 	}
 	item, err := message.Item()
 	if err == nil && message.Function()%2 == 0 {
-		if ack, ackErr := scalarByte(item); ackErr == nil {
+		if ack, ackErr := messageAck(message.Stream(), message.Function(), item); ackErr == nil {
 			converted.Ack = &ack
 		}
 	}
@@ -209,6 +254,17 @@ func fromSDK(message *hsms.DataMessage) Message {
 		}
 	}
 	return converted
+}
+
+func messageAck(stream, function uint8, item secs2.Item) (uint8, error) {
+	if stream == 2 && function == 42 {
+		body, err := gem.DecodeS2F42(item)
+		if err != nil {
+			return 0, err
+		}
+		return uint8(body.HCACK), nil
+	}
+	return scalarByte(item)
 }
 
 func alarmSeverity(code byte) string {

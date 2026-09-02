@@ -74,7 +74,6 @@ type SimulatorScenario struct {
 	ID          string `json:"id"`
 	DisplayName string `json:"displayName"`
 	Event       string `json:"event"`
-	Direction   string `json:"direction"`
 	Stream      uint8  `json:"stream"`
 	Function    uint8  `json:"function"`
 }
@@ -100,29 +99,32 @@ type CommandExchange struct {
 }
 
 type Snapshot struct {
-	ID          string                 `json:"id"`
-	Badge       string                 `json:"badge"`
-	Name        string                 `json:"name"`
-	Profile     string                 `json:"profile"`
-	ProfileName string                 `json:"profileName"`
-	Vendor      string                 `json:"vendor"`
-	Model       string                 `json:"model"`
-	Driver      string                 `json:"driver"`
-	Adapter     string                 `json:"adapter"`
-	AutoConnect bool                   `json:"autoConnect"`
-	Protocol    string                 `json:"protocol"`
-	Mode        string                 `json:"mode"`
-	Host        string                 `json:"host"`
-	Port        int                    `json:"port"`
-	SessionID   uint16                 `json:"sessionId"`
-	State       driver.ConnectionState `json:"state"`
-	StateDetail string                 `json:"stateDetail"`
-	Messages    []driver.Message       `json:"messages"`
-	Events      []event.Event          `json:"events"`
-	Commands    []command.Command      `json:"commands"`
-	Available   []AvailableCommand     `json:"availableCommands"`
-	Scenarios   []SimulatorScenario    `json:"scenarios"`
-	Diagnostics RuntimeDiagnostics     `json:"diagnostics"`
+	ID                    string                 `json:"id"`
+	Badge                 string                 `json:"badge"`
+	Name                  string                 `json:"name"`
+	Profile               string                 `json:"profile"`
+	ProfileName           string                 `json:"profileName"`
+	Vendor                string                 `json:"vendor"`
+	Model                 string                 `json:"model"`
+	Driver                string                 `json:"driver"`
+	Role                  string                 `json:"role"`
+	Adapter               string                 `json:"adapter"`
+	AutoConnect           bool                   `json:"autoConnect"`
+	Protocol              string                 `json:"protocol"`
+	Mode                  string                 `json:"mode"`
+	Host                  string                 `json:"host"`
+	Port                  int                    `json:"port"`
+	SessionID             uint16                 `json:"sessionId"`
+	ConnectTimeoutSeconds int                    `json:"connectTimeoutSeconds"`
+	ReplyTimeoutSeconds   int                    `json:"replyTimeoutSeconds"`
+	State                 driver.ConnectionState `json:"state"`
+	StateDetail           string                 `json:"stateDetail"`
+	Messages              []driver.Message       `json:"messages"`
+	Events                []event.Event          `json:"events"`
+	Commands              []command.Command      `json:"commands"`
+	Available             []AvailableCommand     `json:"availableCommands"`
+	Scenarios             []SimulatorScenario    `json:"scenarios"`
+	Diagnostics           RuntimeDiagnostics     `json:"diagnostics"`
 }
 
 func NewRuntime(definition Definition, compiled *profile.CompiledProfile, protocol driver.Driver, adapter equipment.Adapter, routes *router.Router, engine *automation.Engine, recorder Recorder, onChange func()) *Runtime {
@@ -144,9 +146,6 @@ func (r *Runtime) Connect(ctx context.Context) error {
 		r.mu.Unlock()
 		return err
 	}
-	if _, ok := r.driver.(*driver.SimulatorDriver); ok {
-		r.startSimulator()
-	}
 	return nil
 }
 func (r *Runtime) Disconnect() error {
@@ -159,11 +158,7 @@ func (r *Runtime) Disconnect() error {
 	return r.driver.Close()
 }
 func (r *Runtime) EmitScenario(name string) error {
-	simulator, ok := r.driver.(*driver.SimulatorDriver)
-	if !ok {
-		return fmt.Errorf("device %s is not using the simulator", r.definition.ID)
-	}
-	scenario, ok := r.profile.Spec.Simulator.Scenarios[name]
+	scenario, ok := r.profile.Spec.Scenarios[name]
 	if !ok {
 		return fmt.Errorf("profile %s has no simulator scenario %q", r.profile.Metadata.Name, name)
 	}
@@ -174,7 +169,7 @@ func (r *Runtime) EmitScenario(name string) error {
 			return err
 		}
 		message.Metadata["scenario"] = name
-		return simulator.Deliver(message)
+		return r.emitScenarioMessage(message)
 	}
 
 	message := driver.Message{
@@ -189,20 +184,42 @@ func (r *Runtime) EmitScenario(name string) error {
 		Fields:      resolveScenarioData(scenario.Message.Fields, sequence),
 		Metadata:    map[string]string{"scenario": name},
 	}
-	if scenario.Direction == "inbound" {
+	return r.emitScenarioMessage(message)
+}
+
+func (r *Runtime) emitScenarioMessage(message driver.Message) error {
+	if simulator, ok := r.driver.(*driver.SimulatorDriver); ok {
 		return simulator.Deliver(message)
 	}
-	message.Direction = driver.DirectionOut
-	r.recordMessage(message)
-	reply, err := r.driver.Send(context.Background(), message)
-	if reply != nil {
-		reply.EquipmentID = r.definition.ID
-		r.recordMessage(*reply)
+	if r.definition.Role == "controller" {
+		sequence := r.simSeq.Add(1)
+		message.ID = fmt.Sprintf("injected-%s-%06d", r.definition.ID, sequence)
+		message.EquipmentID = r.definition.ID
+		message.Direction = driver.DirectionIn
+		message.Timestamp = time.Now()
+		message.SystemBytes = uint32(sequence)
+		if message.Metadata == nil {
+			message.Metadata = map[string]string{}
+		}
+		message.Metadata["source"] = "scenario-injection"
+		r.recordMessage(message)
+		select {
+		case r.queue <- message:
+			return nil
+		default:
+			return fmt.Errorf("event pipeline queue is full")
+		}
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(r.definition.Connection.ReplyTimeoutSeconds)*time.Second)
+	defer cancel()
+	_, err := r.SendMessage(ctx, message)
 	return err
 }
 
 func (r *Runtime) SubmitCommand(name string, parameters map[string]any, correlationID, causationID string) (command.Command, error) {
+	if r.definition.Role != "controller" {
+		return command.Command{}, fmt.Errorf("device %s is an Equipment Twin; commands are Host → Equipment definitions", r.definition.ID)
+	}
 	if _, ok := r.profile.Spec.Commands[name]; !ok {
 		return command.Command{}, fmt.Errorf("profile %s has no command %q", r.profile.Metadata.Name, name)
 	}
@@ -251,6 +268,9 @@ func (r *Runtime) SendMessage(ctx context.Context, message driver.Message) (Mess
 // ExecuteCommandNow builds a Profile command, sends it immediately, validates
 // the reply, and persists the same command/event evidence as automation work.
 func (r *Runtime) ExecuteCommandNow(ctx context.Context, name string, parameters map[string]any, correlationID, causationID string) (CommandExchange, error) {
+	if r.definition.Role != "controller" {
+		return CommandExchange{}, fmt.Errorf("device %s is an Equipment Twin; commands are Host → Equipment definitions", r.definition.ID)
+	}
 	if r.driver.State() != driver.StateSelected {
 		return CommandExchange{}, fmt.Errorf("device %s is not selected", r.definition.ID)
 	}
@@ -270,6 +290,10 @@ func (r *Runtime) receive(message driver.Message) {
 	message.EquipmentID = r.definition.ID
 	message.Direction = driver.DirectionIn
 	r.recordMessage(message)
+	if _, inMemory := r.driver.(*driver.SimulatorDriver); r.definition.Role == "equipment-simulator" && !inMemory {
+		r.replyAsEquipment(message)
+		return
+	}
 	// The protocol acknowledgement stays on the receive path and never waits for routing or AI.
 	if message.Wait && ((message.Stream == 6 && message.Function == 11) || (message.Stream == 5 && message.Function == 1)) {
 		response := driver.Message{ID: "reply-" + message.ID, EquipmentID: r.definition.ID, Direction: driver.DirectionOut, Timestamp: time.Now(), Stream: message.Stream, Function: message.Function + 1, SML: fmt.Sprintf("S%dF%d\n<B 0>\n.", message.Stream, message.Function+1)}
@@ -287,6 +311,33 @@ func (r *Runtime) receive(message driver.Message) {
 		r.mu.Unlock()
 		r.stateChanged(driver.StateError, "event pipeline queue is full")
 	}
+}
+
+func (r *Runtime) replyAsEquipment(message driver.Message) {
+	if !message.Wait {
+		return
+	}
+	var ack *uint8
+	for _, definition := range r.profile.Spec.Commands {
+		if definition.Stream == message.Stream && definition.Function == message.Function {
+			ack = definition.SuccessAck
+			break
+		}
+	}
+	sml := fmt.Sprintf("S%dF%d\n.", message.Stream, message.Function+1)
+	if ack != nil {
+		if message.Stream == 2 && message.Function == 41 {
+			// S2F42 carries HCACK plus the per-parameter CPACK list.
+			sml = fmt.Sprintf("S2F42\n<L[2]\n  <B %d>\n  <L[0]>\n>\n.", *ack)
+		} else {
+			sml = fmt.Sprintf("S%dF%d\n<B %d>\n.", message.Stream, message.Function+1, *ack)
+		}
+	}
+	response := driver.Message{ID: "reply-" + message.ID, EquipmentID: r.definition.ID, Direction: driver.DirectionOut, Timestamp: time.Now(), Stream: message.Stream, Function: message.Function + 1, SML: sml, Tree: sml, Ack: ack}
+	if err := r.driver.Reply(context.Background(), message, response); err != nil {
+		response.Metadata = map[string]string{"error": err.Error()}
+	}
+	r.recordMessage(response)
 }
 
 func (r *Runtime) process() {
@@ -413,7 +464,7 @@ func (r *Runtime) startSimulator() {
 		case <-timer.C:
 			_ = r.EmitScenario(names[0])
 		}
-		if _, ok := r.profile.Spec.Simulator.Scenarios["alarm-raised"]; ok {
+		if _, ok := r.profile.Spec.Scenarios["alarm-raised"]; ok {
 			alarmTimer := time.NewTimer(650 * time.Millisecond)
 			select {
 			case <-ctx.Done():
@@ -439,8 +490,8 @@ func (r *Runtime) startSimulator() {
 }
 
 func (r *Runtime) scenarioNames(eventsOnly bool) []string {
-	names := make([]string, 0, len(r.profile.Spec.Simulator.Scenarios))
-	for name, scenario := range r.profile.Spec.Simulator.Scenarios {
+	names := make([]string, 0, len(r.profile.Spec.Scenarios))
+	for name, scenario := range r.profile.Spec.Scenarios {
 		if eventsOnly && scenario.Event == "" {
 			continue
 		}
@@ -480,12 +531,17 @@ func (r *Runtime) stateChanged(state driver.ConnectionState, detail string) {
 	if state == driver.StateSelected {
 		now := time.Now()
 		r.diagnostics.LastConnectedAt = &now
+		r.diagnostics.LastError = ""
 	}
-	if state == driver.StateError {
+	if state == driver.StateError || (state == driver.StateDisconnected && !strings.Contains(detail, "LocalClose") && detail != "closed") {
 		r.diagnostics.LastError = detail
 	}
 	r.mu.Unlock()
 	r.changed()
+	_, inMemory := r.driver.(*driver.SimulatorDriver)
+	if state == driver.StateSelected && (r.definition.Role == "equipment-simulator" || inMemory) {
+		r.startSimulator()
+	}
 }
 func (r *Runtime) recordMessage(value driver.Message) {
 	if err := driver.PopulateRawHex(&value); err != nil {
@@ -566,14 +622,14 @@ func (r *Runtime) Snapshot() Snapshot {
 		available = append(available, AvailableCommand{Name: name, DisplayName: definition.DisplayName, Stream: definition.Stream, Function: definition.Function, Wait: definition.Wait, Parameters: append([]string(nil), definition.Parameters...)})
 	}
 	sort.Slice(available, func(i, j int) bool { return available[i].Name < available[j].Name })
-	scenarios := make([]SimulatorScenario, 0, len(r.profile.Spec.Simulator.Scenarios))
+	scenarios := make([]SimulatorScenario, 0, len(r.profile.Spec.Scenarios))
 	for _, name := range r.scenarioNames(false) {
-		scenario := r.profile.Spec.Simulator.Scenarios[name]
-		scenarios = append(scenarios, SimulatorScenario{ID: name, DisplayName: scenario.DisplayName, Event: scenario.Event, Direction: scenario.Direction, Stream: scenario.Message.Stream, Function: scenario.Message.Function})
+		scenario := r.profile.Spec.Scenarios[name]
+		scenarios = append(scenarios, SimulatorScenario{ID: name, DisplayName: scenario.DisplayName, Event: scenario.Event, Stream: scenario.Message.Stream, Function: scenario.Message.Function})
 	}
 	diagnostics := r.diagnostics
 	if provider, ok := r.driver.(driver.DiagnosticProvider); ok {
 		diagnostics.Protocol = provider.ProtocolDiagnostics()
 	}
-	return Snapshot{ID: r.definition.ID, Badge: r.definition.Badge, Name: r.definition.Name, Profile: r.definition.Profile, ProfileName: r.profile.Metadata.Name, Vendor: r.profile.Metadata.Vendor, Model: r.profile.Metadata.Model, Driver: r.definition.Driver, Adapter: r.adapter.Name(), AutoConnect: r.definition.AutoConnect, Protocol: r.definition.Connection.Protocol, Mode: r.definition.Connection.Mode, Host: r.definition.Connection.Host, Port: r.definition.Connection.Port, SessionID: r.definition.Connection.SessionID, State: r.state, StateDetail: r.detail, Messages: messages, Events: events, Commands: commands, Available: available, Scenarios: scenarios, Diagnostics: diagnostics}
+	return Snapshot{ID: r.definition.ID, Badge: r.definition.Badge, Name: r.definition.Name, Profile: r.definition.Profile, ProfileName: r.profile.Metadata.Name, Vendor: r.profile.Metadata.Vendor, Model: r.profile.Metadata.Model, Driver: r.definition.Driver, Role: r.definition.Role, Adapter: r.adapter.Name(), AutoConnect: r.definition.AutoConnect, Protocol: r.definition.Connection.Protocol, Mode: r.definition.Connection.Mode, Host: r.definition.Connection.Host, Port: r.definition.Connection.Port, SessionID: r.definition.Connection.SessionID, ConnectTimeoutSeconds: r.definition.Connection.ConnectTimeoutSeconds, ReplyTimeoutSeconds: r.definition.Connection.ReplyTimeoutSeconds, State: r.state, StateDetail: r.detail, Messages: messages, Events: events, Commands: commands, Available: available, Scenarios: scenarios, Diagnostics: diagnostics}
 }

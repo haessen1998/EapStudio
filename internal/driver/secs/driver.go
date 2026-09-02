@@ -1,6 +1,9 @@
 package secs
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 type ConnectionState string
 
@@ -26,10 +29,12 @@ type Driver interface {
 }
 
 type ConnectionConfig struct {
-	Host      string
-	Port      int
-	Mode      string
-	SessionID uint16
+	Host           string
+	Port           int
+	Mode           string
+	SessionID      uint16
+	ConnectTimeout time.Duration
+	ReplyTimeout   time.Duration
 }
 
 type ProtocolDiagnostics struct {

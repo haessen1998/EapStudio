@@ -41,6 +41,10 @@ func Compile(document EquipmentProfile) (*CompiledProfile, error) {
 	if document.Metadata.Adapter == "" {
 		document.Metadata.Adapter = "generic-gem"
 	}
+	if len(document.Spec.Scenarios) == 0 && document.Spec.Simulator != nil && len(document.Spec.Simulator.Scenarios) > 0 {
+		document.Spec.Scenarios = document.Spec.Simulator.Scenarios
+	}
+	document.Spec.Simulator = nil
 
 	compiled := &CompiledProfile{
 		EquipmentProfile:  document,
@@ -89,7 +93,7 @@ func Compile(document EquipmentProfile) (*CompiledProfile, error) {
 			return nil, fmt.Errorf("command %q failureEvent: %w", name, err)
 		}
 	}
-	for scenarioName, scenario := range document.Spec.Simulator.Scenarios {
+	for scenarioName, scenario := range document.Spec.Scenarios {
 		if scenario.Event != "" {
 			if _, ok := compiled.EventsByName[scenario.Event]; !ok {
 				return nil, fmt.Errorf("simulator scenario %q references unknown event %q", scenarioName, scenario.Event)
@@ -98,9 +102,6 @@ func Compile(document EquipmentProfile) (*CompiledProfile, error) {
 		}
 		if scenario.Message.Stream == 0 || scenario.Message.Function == 0 {
 			return nil, fmt.Errorf("simulator scenario %q requires event or message stream/function", scenarioName)
-		}
-		if scenario.Direction != "inbound" && scenario.Direction != "outbound" {
-			return nil, fmt.Errorf("simulator scenario %q direction must be inbound or outbound", scenarioName)
 		}
 	}
 	return compiled, nil

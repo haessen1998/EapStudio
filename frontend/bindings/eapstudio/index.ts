@@ -18,6 +18,8 @@ export type {
     EquipmentConfigSaveResult,
     EquipmentMergeResult,
     EquipmentMessageRequest,
+    MessageCatalogItem,
+    MessageTemplateSaveRequest,
     ParameterChange,
     PermissionPolicy,
     ProfileDocument,
@@ -26,5 +28,6 @@ export type {
     ProfileSummary,
     ProfileValidation,
     RuleReloadResult,
-    StudioSnapshot
+    StudioSnapshot,
+    WorkspaceSummary
 } from "./models.js";

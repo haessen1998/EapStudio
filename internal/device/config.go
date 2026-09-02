@@ -20,15 +20,18 @@ type Definition struct {
 	Profile     string           `yaml:"profile" json:"profile"`
 	Adapter     string           `yaml:"adapter,omitempty" json:"adapter"`
 	Driver      string           `yaml:"driver" json:"driver"`
+	Role        string           `yaml:"role,omitempty" json:"role"`
 	AutoConnect bool             `yaml:"autoConnect" json:"autoConnect"`
 	Connection  ConnectionConfig `yaml:"connection" json:"connection"`
 }
 type ConnectionConfig struct {
-	Protocol  string `yaml:"protocol" json:"protocol"`
-	Mode      string `yaml:"mode" json:"mode"`
-	Host      string `yaml:"host" json:"host"`
-	Port      int    `yaml:"port" json:"port"`
-	SessionID uint16 `yaml:"sessionId" json:"sessionId"`
+	Protocol              string `yaml:"protocol" json:"protocol"`
+	Mode                  string `yaml:"mode" json:"mode"`
+	Host                  string `yaml:"host" json:"host"`
+	Port                  int    `yaml:"port" json:"port"`
+	SessionID             uint16 `yaml:"sessionId" json:"sessionId"`
+	ConnectTimeoutSeconds int    `yaml:"connectTimeoutSeconds,omitempty" json:"connectTimeoutSeconds"`
+	ReplyTimeoutSeconds   int    `yaml:"replyTimeoutSeconds,omitempty" json:"replyTimeoutSeconds"`
 }
 
 func LoadConfig(source fs.FS, path string) (Config, error) {
@@ -65,6 +68,15 @@ func ValidateConfig(config Config) error {
 		if device.Connection.Port < 0 || device.Connection.Port > 65535 {
 			return fmt.Errorf("device %q has invalid port %d", device.ID, device.Connection.Port)
 		}
+		if device.Role != "controller" && device.Role != "equipment-simulator" {
+			return fmt.Errorf("device %q has invalid role %q", device.ID, device.Role)
+		}
+		if device.Connection.ConnectTimeoutSeconds < 1 || device.Connection.ConnectTimeoutSeconds > 300 {
+			return fmt.Errorf("device %q connect timeout must be 1-300 seconds", device.ID)
+		}
+		if device.Connection.ReplyTimeoutSeconds < 1 || device.Connection.ReplyTimeoutSeconds > 600 {
+			return fmt.Errorf("device %q reply timeout must be 1-600 seconds", device.ID)
+		}
 		seen[device.ID] = true
 	}
 	return nil
@@ -75,53 +87,33 @@ func NormalizeConfig(config Config) Config {
 		if config.Devices[index].Adapter == "" {
 			config.Devices[index].Adapter = "generic-gem"
 		}
+		if config.Devices[index].Role == "" {
+			if config.Devices[index].Driver == "simulator" || config.Devices[index].Driver == "simulator-memory" {
+				config.Devices[index].Role = "equipment-simulator"
+			} else {
+				config.Devices[index].Role = "controller"
+			}
+		}
 		if config.Devices[index].Driver == "" {
-			config.Devices[index].Driver = "simulator"
+			if config.Devices[index].Role == "controller" {
+				config.Devices[index].Driver = "go-secs"
+			} else {
+				config.Devices[index].Driver = "simulator"
+			}
+		}
+		if config.Devices[index].Connection.ConnectTimeoutSeconds == 0 {
+			config.Devices[index].Connection.ConnectTimeoutSeconds = 10
+		}
+		if config.Devices[index].Connection.ReplyTimeoutSeconds == 0 {
+			config.Devices[index].Connection.ReplyTimeoutSeconds = 45
 		}
 	}
 	return config
 }
 
-func LoadRuntimeConfig(source fs.FS, embeddedPath string) (Config, string, error) {
-	dir, err := os.UserConfigDir()
-	if err != nil {
-		return Config{}, "", err
-	}
-	path := filepath.Join(dir, "EapStudio", "devices.yaml")
-	data, err := os.ReadFile(path)
-	if err == nil {
-		config, decodeErr := DecodeConfig(data)
-		if decodeErr != nil {
-			return Config{}, path, decodeErr
-		}
-		migrated, changed, migrateErr := migratePackagedAdapters(source, embeddedPath, config)
-		if migrateErr != nil {
-			return Config{}, path, migrateErr
-		}
-		if changed {
-			if saveErr := SaveConfig(path, migrated); saveErr != nil {
-				return Config{}, path, saveErr
-			}
-		}
-		return migrated, path, nil
-	}
-	if !os.IsNotExist(err) {
-		return Config{}, path, fmt.Errorf("read runtime devices: %w", err)
-	}
-	config, err := LoadConfig(source, embeddedPath)
-	if err != nil {
-		return Config{}, path, err
-	}
-	if err := SaveConfig(path, config); err != nil {
-		return Config{}, path, err
-	}
-	return config, path, nil
-}
-
-// migratePackagedAdapters upgrades only the legacy generic adapter for a
-// matching packaged demo profile. User-selected custom adapters and all other
-// runtime settings remain untouched.
-func migratePackagedAdapters(source fs.FS, embeddedPath string, runtime Config) (Config, bool, error) {
+// MigratePackagedAdapters upgrades only a legacy generic adapter for an exact
+// packaged demo ID/Profile match. Explicit custom adapters are preserved.
+func MigratePackagedAdapters(source fs.FS, embeddedPath string, runtime Config) (Config, bool, error) {
 	packaged, err := LoadConfig(source, embeddedPath)
 	if err != nil {
 		return Config{}, false, err

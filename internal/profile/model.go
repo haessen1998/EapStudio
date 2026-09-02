@@ -20,7 +20,10 @@ type Spec struct {
 	Reports   map[uint64]ReportDefinition   `yaml:"reports" json:"reports"`
 	Events    map[uint64]EventDefinition    `yaml:"events" json:"events"`
 	Commands  map[string]CommandDefinition  `yaml:"commands" json:"commands"`
-	Simulator SimulatorDefinition           `yaml:"simulator" json:"simulator"`
+	Scenarios map[string]SimulatorScenario  `yaml:"scenarios,omitempty" json:"scenarios"`
+	// Simulator is accepted only to migrate legacy profiles that nested
+	// scenarios under simulator.scenarios.
+	Simulator *SimulatorDefinition `yaml:"simulator,omitempty" json:"-"`
 }
 
 type VariableDefinition struct {
@@ -55,6 +58,7 @@ type CommandDefinition struct {
 	SuccessEvent string   `yaml:"successEvent" json:"successEvent"`
 	FailureEvent string   `yaml:"failureEvent" json:"failureEvent"`
 	SuccessAck   *uint8   `yaml:"successAck" json:"successAck"`
+	SML          string   `yaml:"sml,omitempty" json:"sml,omitempty"`
 }
 
 type SimulatorDefinition struct {
@@ -65,7 +69,6 @@ type SimulatorScenario struct {
 	DisplayName string          `yaml:"displayName" json:"displayName"`
 	Event       string          `yaml:"event" json:"event"`
 	Data        map[string]any  `yaml:"data" json:"data"`
-	Direction   string          `yaml:"direction" json:"direction"`
 	Message     MessageTemplate `yaml:"message" json:"message"`
 }
 

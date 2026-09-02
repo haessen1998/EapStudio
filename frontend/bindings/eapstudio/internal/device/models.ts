@@ -30,6 +30,8 @@ export interface ConnectionConfig {
     "host": string;
     "port": number;
     "sessionId": number;
+    "connectTimeoutSeconds": number;
+    "replyTimeoutSeconds": number;
 }
 
 export interface Definition {
@@ -39,6 +41,7 @@ export interface Definition {
     "profile": string;
     "adapter": string;
     "driver": string;
+    "role": string;
     "autoConnect": boolean;
     "connection": ConnectionConfig;
 }
@@ -60,7 +63,6 @@ export interface SimulatorScenario {
     "id": string;
     "displayName": string;
     "event": string;
-    "direction": string;
     "stream": number;
     "function": number;
 }
@@ -74,6 +76,7 @@ export interface Snapshot {
     "vendor": string;
     "model": string;
     "driver": string;
+    "role": string;
     "adapter": string;
     "autoConnect": boolean;
     "protocol": string;
@@ -81,6 +84,8 @@ export interface Snapshot {
     "host": string;
     "port": number;
     "sessionId": number;
+    "connectTimeoutSeconds": number;
+    "replyTimeoutSeconds": number;
     "state": secs$0.ConnectionState;
     "stateDetail": string;
     "messages": secs$0.Message[] | null;

@@ -12,6 +12,8 @@ An agent working in this repository is expected to help engineers integrate a ne
 - A `DeviceRuntime` owns one equipment connection, protocol queues, command queue, and short live history. Never share connection state across equipment.
 - The protocol fast path may acknowledge messages and enqueue trace records only. It must not wait for SQLite, Router sinks, AI, or business automation.
 - `Profile` describes equipment knowledge: variables, reports, CEIDs, commands, simulator templates, and model-specific mappings.
+- Profile `commands` always mean Host → Equipment. Top-level Profile `scenarios` always mean Equipment → Host; never reverse these meanings based on whether a Runtime is real or simulated.
+- A `controller` Runtime represents the Host side connected to production equipment. An `equipment-simulator` Runtime represents a network-accessible Equipment Twin, normally using a passive HSMS endpoint. Workspaces may mix both roles.
 - `Adapter` translates protocol messages to canonical events and canonical commands back to protocol messages.
 - `Automation Engine` consumes events and creates commands. `Router` distributes canonical events and must not depend on SECS message structures.
 - Keep equipment identity in `equipmentId`, not in canonical names. Use event/equipment glob selectors in routes and automations (`wafer.*` + `AOI-*`) for shared behavior and an exact equipment selector for exceptions.
@@ -27,7 +29,7 @@ When given an equipment communication manual, GEM interface document, SML sample
 2. Add a versioned YAML Profile under `profiles/<vendor-or-family>/`. Do not edit the demo Profile to represent unrelated equipment.
 3. Define every referenced VID and report before defining an event. Map canonical fields by RPTID and VID rather than positional magic numbers in Go.
 4. Define outbound commands with odd primary functions, wait-bit behavior, parameters, success/failure events, and success ACK.
-5. Add simulator scenarios for representative inbound and outbound messages. Use event reverse mapping when the message is an S6F11 represented by a canonical event; use a generic `message` template for other SxFy messages such as S5F1, S2F41, or S7F3.
+5. Add top-level `scenarios` only for representative Equipment → Host messages. Use event reverse mapping when the message is an S6F11 represented by a canonical event; use a generic `message` template for other equipment-originated SxFy messages such as S5F1. Put Host → Equipment S2F41/S7F3 definitions under `commands`.
 6. Use `generic-gem` when the Profile can express the mapping. Create a model-specific Adapter only when decoding, validation, or message construction cannot be represented declaratively. Keep model-specific code in a focused adapter file and register it explicitly.
 7. Add compiler, parser, reverse-mapping, ACK, and simulator tests. Include at least one captured or manual-derived sample with identifying production values anonymized.
 8. Update `configs/devices.yaml` only when adding an intentional runnable example. Never insert real credentials, production IPs, material identifiers, or proprietary payloads.
@@ -55,6 +57,7 @@ When given an equipment communication manual, GEM interface document, SML sample
 - Fast-path trace recording must remain a bounded non-blocking queue with observable drop counts.
 - Canonical events are persisted through the Router `sqlite-history` sink on the async path.
 - User-facing messages, events, alarms, and history lists should use explicit pagination with stable ordering. Do not add endless scrolling for diagnostic records.
+- Runtime configuration is workspace-scoped under `EapStudio/workspaces/<id>/`: `devices.yaml`, `routes.yaml`, `automations.yaml`, `profiles/`, and `events/`. Never write a Profile or rule into another workspace during a hot switch.
 
 ## Verification
 

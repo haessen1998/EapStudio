@@ -307,6 +307,24 @@ button {
   font-size: 9px;
   white-space: nowrap;
 }
+.sidebar-workspace {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  align-items: center;
+  gap: 6px;
+}
+.sidebar-workspace select {
+  width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  border: 0;
+  color: var(--muted-foreground);
+  background: transparent;
+  font-size: 9px;
+  text-overflow: ellipsis;
+  outline: none;
+}
 .sidebar-footer-action {
   width: 30px;
   height: 30px;
@@ -1025,14 +1043,206 @@ tbody tr:hover {
   color: var(--muted-foreground);
   font-size: 9px;
 }
+.empty-inline {
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  padding: 16px;
+  color: var(--muted-foreground);
+  font-size: 10px;
+}
+.scenario-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+.scenario-card-content {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 12px !important;
+}
+.scenario-card-content > div {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+.scenario-card-content b {
+  font-size: 11px;
+}
+.scenario-card-content span {
+  overflow: hidden;
+  color: var(--muted-foreground);
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.scenario-status {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: 10px;
+}
+.message-lab-grid {
+  display: grid;
+  min-height: 620px;
+  grid-template-columns: minmax(230px, 0.75fr) minmax(380px, 1.35fr) minmax(250px, 0.8fr);
+  gap: 10px;
+}
+.message-lab-grid > .card {
+  min-width: 0;
+  overflow: hidden;
+}
+.message-catalog > div:last-child,
+.message-composer > div:last-child,
+.message-promote > div:last-child {
+  display: grid;
+  align-content: start;
+  gap: 10px;
+}
+.message-catalog-filters {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 90px;
+  gap: 6px;
+}
+.message-catalog-filters input,
+.message-catalog-filters select,
+.message-composer select,
+.message-promote input,
+.message-promote select {
+  min-width: 0;
+  height: 32px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 0 8px;
+  color: var(--foreground);
+  background: var(--background);
+  font-size: 10px;
+  outline: none;
+}
+.message-catalog-list {
+  display: grid;
+  max-height: 530px;
+  overflow: auto;
+  gap: 3px;
+}
+.message-catalog-list button {
+  display: grid;
+  grid-template-columns: 52px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 7px;
+  border: 0;
+  border-radius: 6px;
+  padding: 7px;
+  color: inherit;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+.message-catalog-list button:hover {
+  background: var(--accent);
+}
+.message-catalog-list b {
+  color: var(--primary);
+  font: 10px var(--font-mono);
+}
+.message-catalog-list span {
+  overflow: hidden;
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.message-composer label,
+.message-promote label {
+  display: grid;
+  gap: 5px;
+  color: var(--muted-foreground);
+  font-size: 10px;
+}
+.message-composer textarea {
+  min-height: 310px;
+  resize: vertical;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px;
+  color: var(--foreground);
+  background: var(--background);
+  font: 11px/1.55 var(--font-mono);
+  outline: none;
+}
+.lab-result {
+  display: grid;
+  gap: 7px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 9px;
+  font-size: 10px;
+}
+.lab-result pre {
+  max-height: 180px;
+  overflow: auto;
+  margin: 0;
+  color: var(--muted-foreground);
+  font: 9px/1.5 var(--font-mono);
+  white-space: pre-wrap;
+}
 .settings-grid {
   display: grid;
   grid-template-columns: minmax(0, 0.72fr) minmax(0, 1.28fr);
   gap: 12px;
 }
 .settings-ai,
-.settings-devices {
+.settings-devices,
+.workspace-settings-card {
   grid-column: 1 / -1;
+}
+.workspace-list {
+  display: grid;
+  gap: 6px;
+}
+.workspace-list > div {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 8px;
+}
+.workspace-list > div.active {
+  border-color: color-mix(in srgb, var(--primary) 45%, var(--border));
+  background: color-mix(in srgb, var(--primary) 5%, var(--card));
+}
+.workspace-list > div > button:first-child {
+  display: grid;
+  min-width: 0;
+  flex: 1;
+  gap: 2px;
+  border: 0;
+  color: inherit;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+.workspace-list > div > button:disabled {
+  cursor: default;
+}
+.workspace-list b,
+.workspace-list span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.workspace-list b {
+  font-size: 11px;
+}
+.workspace-list span {
+  color: var(--muted-foreground);
+  font: 9px var(--font-mono);
+}
+.workspace-create {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
 }
 .settings-form {
   display: grid;

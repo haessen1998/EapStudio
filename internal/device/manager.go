@@ -41,11 +41,11 @@ func NewManager(source fs.FS, config Config, routes *router.Router, engine *auto
 		}
 		var protocol driver.Driver
 		switch definition.Driver {
-		case "simulator", "":
+		case "simulator-memory", "":
 			protocol = driver.NewSimulatorDriver(definition.ID)
-		case "go-secs":
+		case "go-secs", "simulator":
 			var err error
-			protocol, err = driver.NewGoSecsDriver(driver.ConnectionConfig{Host: definition.Connection.Host, Port: definition.Connection.Port, Mode: definition.Connection.Mode, SessionID: definition.Connection.SessionID})
+			protocol, err = driver.NewGoSecsDriver(driverConfig(definition))
 			if err != nil {
 				return nil, fmt.Errorf("create driver for %s: %w", definition.ID, err)
 			}
@@ -69,8 +69,10 @@ func (m *Manager) ApplyConfig(source fs.FS, config Config, forceProfiles map[str
 	profiles := map[string]*profile.CompiledProfile{}
 	m.mu.RLock()
 	current := make(map[string]*Runtime, len(m.runtimes))
+	wasConnected := make(map[string]bool, len(m.runtimes))
 	for id, runtime := range m.runtimes {
 		current[id] = runtime
+		wasConnected[id] = runtime.driver.State() != driver.StateDisconnected
 	}
 	m.mu.RUnlock()
 
@@ -118,7 +120,7 @@ func (m *Manager) ApplyConfig(source fs.FS, config Config, forceProfiles map[str
 		}
 	}
 	for _, definition := range config.Devices {
-		if definition.AutoConnect && next[definition.ID] != current[definition.ID] {
+		if (definition.AutoConnect || wasConnected[definition.ID]) && next[definition.ID] != current[definition.ID] {
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			_ = next[definition.ID].Connect(ctx)
 			cancel()
@@ -130,11 +132,11 @@ func (m *Manager) ApplyConfig(source fs.FS, config Config, forceProfiles map[str
 func buildRuntimeDependencies(definition Definition) (driver.Driver, equipment.Adapter, error) {
 	var protocol driver.Driver
 	switch definition.Driver {
-	case "simulator", "":
+	case "simulator-memory", "":
 		protocol = driver.NewSimulatorDriver(definition.ID)
-	case "go-secs":
+	case "go-secs", "simulator":
 		var err error
-		protocol, err = driver.NewGoSecsDriver(driver.ConnectionConfig{Host: definition.Connection.Host, Port: definition.Connection.Port, Mode: definition.Connection.Mode, SessionID: definition.Connection.SessionID})
+		protocol, err = driver.NewGoSecsDriver(driverConfig(definition))
 		if err != nil {
 			return nil, nil, fmt.Errorf("create driver for %s: %w", definition.ID, err)
 		}
@@ -146,6 +148,14 @@ func buildRuntimeDependencies(definition Definition) (driver.Driver, equipment.A
 		return nil, nil, fmt.Errorf("create adapter for %s: %w", definition.ID, err)
 	}
 	return protocol, adapter, nil
+}
+
+func driverConfig(definition Definition) driver.ConnectionConfig {
+	return driver.ConnectionConfig{
+		Host: definition.Connection.Host, Port: definition.Connection.Port, Mode: definition.Connection.Mode, SessionID: definition.Connection.SessionID,
+		ConnectTimeout: time.Duration(definition.Connection.ConnectTimeoutSeconds) * time.Second,
+		ReplyTimeout:   time.Duration(definition.Connection.ReplyTimeoutSeconds) * time.Second,
+	}
 }
 
 func (m *Manager) Connect(ctx context.Context, id string) error {

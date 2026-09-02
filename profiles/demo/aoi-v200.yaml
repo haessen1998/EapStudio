@@ -53,27 +53,12 @@ spec:
       successEvent: review.requested
       failureEvent: review.failed
       successAck: 0
-  simulator:
-    scenarios:
-      material-arrival:
-        displayName: AOI material arrival
-        event: material.arrived
-        data: { materialId: "AOI-MAT-${sequence}", recipeId: AOI-STD, portId: LP01 }
-      inspection-completed:
-        displayName: Inspection completed
-        event: inspection.completed
-        data: { waferId: "WAFER-${sequence}", defectCount: 3, result: REVIEW }
-      review-command:
-        displayName: Operator review command
-        direction: outbound
-        message:
-          stream: 2
-          function: 41
-          wait: true
-          sml: |
-            S2F41 W
-            <L[2]
-              <A "REVIEW">
-              <L[0]>
-            >
-            .
+  scenarios:
+    material-arrival:
+      displayName: AOI material arrival
+      event: material.arrived
+      data: { materialId: "AOI-MAT-${sequence}", recipeId: AOI-STD, portId: LP01 }
+    inspection-completed:
+      displayName: Inspection completed
+      event: inspection.completed
+      data: { waferId: "WAFER-${sequence}", defectCount: 3, result: REVIEW }

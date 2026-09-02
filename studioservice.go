@@ -26,10 +26,12 @@ import (
 	"eapstudio/internal/router"
 	"eapstudio/internal/sink"
 	sqlitestore "eapstudio/internal/store/sqlite"
+	"gopkg.in/yaml.v3"
 )
 
 type StudioService struct {
 	packagedSource       fs.FS
+	runtimeMu            sync.RWMutex
 	manager              *device.Manager
 	router               *router.Router
 	config               device.Config
@@ -51,10 +53,24 @@ type StudioService struct {
 	ruleReloadMu         sync.Mutex
 	ruleFingerprint      [32]byte
 	watchCancel          context.CancelFunc
+	appContext           context.Context
+	workspaceRoot        string
+	activeWorkspaceID    string
 	pending              map[string]AIActionPermission
 	pendingEquipment     map[string]pendingEquipmentAction
 	permissionSequence   atomic.Uint64
 	copilotEvents        chan CopilotStreamEvent
+}
+
+type WorkspaceSummary struct {
+	ID     string `json:"id"`
+	Name   string `json:"name"`
+	Path   string `json:"path"`
+	Active bool   `json:"active"`
+}
+
+type workspaceMetadata struct {
+	Name string `json:"name"`
 }
 
 type StudioSnapshot struct {
@@ -179,23 +195,131 @@ func NewStudioService(source fs.FS) (*StudioService, error) {
 	if err != nil {
 		return nil, err
 	}
-	config, configPath, err := device.LoadRuntimeConfig(source, "configs/devices.yaml")
+	workspaceRoot, workspaceID, configDir, err := initializeWorkspaces(source, filepath.Dir(databasePath))
 	if err != nil {
 		return nil, err
 	}
-	configDir := filepath.Dir(configPath)
-	for _, item := range []struct{ embedded, name string }{{"configs/routes.yaml", "routes.yaml"}, {"configs/automations.yaml", "automations.yaml"}} {
-		if err := materializeRuntimeFile(source, item.embedded, filepath.Join(configDir, item.name)); err != nil {
-			return nil, err
+	config, err := device.LoadConfig(os.DirFS(configDir), "devices.yaml")
+	if err != nil {
+		return nil, err
+	}
+	service, err := newStudioServiceWithConfig(source, databasePath, config, filepath.Join(configDir, "devices.yaml"), os.DirFS(configDir), "routes.yaml", "automations.yaml")
+	if err != nil {
+		return nil, err
+	}
+	service.workspaceRoot = workspaceRoot
+	service.activeWorkspaceID = workspaceID
+	return service, nil
+}
+
+func initializeWorkspaces(source fs.FS, configRoot string) (string, string, string, error) {
+	root := filepath.Join(configRoot, "workspaces")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		return "", "", "", err
+	}
+	activePath := filepath.Join(configRoot, "active-workspace")
+	active := ""
+	if data, err := os.ReadFile(activePath); err == nil {
+		active = strings.TrimSpace(string(data))
+	}
+	if !validWorkspaceID(active) {
+		active = "default"
+	}
+	directory := filepath.Join(root, active)
+	if _, err := os.Stat(filepath.Join(directory, "devices.yaml")); os.IsNotExist(err) {
+		if err := initializeWorkspaceDirectory(source, configRoot, directory, "Default Factory Line", true); err != nil {
+			return "", "", "", err
 		}
 	}
-	if err := ensureRuntimeFileSinkRoute(filepath.Join(configDir, "routes.yaml")); err != nil {
-		return nil, err
+	if err := migrateWorkspaceProfiles(directory); err != nil {
+		return "", "", "", err
 	}
-	if err := materializeRuntimeTree(source, "profiles", configDir); err != nil {
-		return nil, err
+	if err := os.WriteFile(activePath, []byte(active+"\n"), 0o600); err != nil {
+		return "", "", "", err
 	}
-	return newStudioServiceWithConfig(source, databasePath, config, configPath, os.DirFS(configDir), "routes.yaml", "automations.yaml")
+	return root, active, directory, nil
+}
+
+func migrateWorkspaceProfiles(directory string) error {
+	root := filepath.Join(directory, "profiles")
+	return filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() || !strings.HasSuffix(strings.ToLower(path), ".yaml") {
+			return nil
+		}
+		data, err := os.ReadFile(path)
+		if err != nil || !strings.Contains(string(data), "\n  simulator:") {
+			return err
+		}
+		compiled, err := profile.Decode(data)
+		if err != nil {
+			return err
+		}
+		encoded, err := yaml.Marshal(compiled.EquipmentProfile)
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(path, encoded, 0o600)
+	})
+}
+
+func initializeWorkspaceDirectory(source fs.FS, legacyRoot, directory, name string, migrateLegacy bool) error {
+	if err := os.MkdirAll(directory, 0o755); err != nil {
+		return err
+	}
+	for _, item := range []struct{ packagedPath, name string }{{"configs/devices.yaml", "devices.yaml"}, {"configs/routes.yaml", "routes.yaml"}, {"configs/automations.yaml", "automations.yaml"}} {
+		seedSource, seedPath := source, item.packagedPath
+		if migrateLegacy {
+			if _, err := os.Stat(filepath.Join(legacyRoot, item.name)); err == nil {
+				seedSource, seedPath = os.DirFS(legacyRoot), item.name
+			}
+		}
+		if err := materializeRuntimeFile(seedSource, seedPath, filepath.Join(directory, item.name)); err != nil {
+			return err
+		}
+	}
+	devicePath := filepath.Join(directory, "devices.yaml")
+	runtimeDevices, err := device.LoadConfig(os.DirFS(directory), "devices.yaml")
+	if err != nil {
+		return err
+	}
+	migratedDevices, changed, err := device.MigratePackagedAdapters(source, "configs/devices.yaml", runtimeDevices)
+	if err != nil {
+		return err
+	}
+	if changed {
+		if err := device.SaveConfig(devicePath, migratedDevices); err != nil {
+			return err
+		}
+	}
+	profileSource := source
+	if migrateLegacy {
+		if info, err := os.Stat(filepath.Join(legacyRoot, "profiles")); err == nil && info.IsDir() {
+			profileSource = os.DirFS(legacyRoot)
+		}
+	}
+	if err := materializeRuntimeTree(profileSource, "profiles", directory); err != nil {
+		return err
+	}
+	if err := ensureRuntimeFileSinkRoute(filepath.Join(directory, "routes.yaml")); err != nil {
+		return err
+	}
+	metadata, _ := json.MarshalIndent(workspaceMetadata{Name: name}, "", "  ")
+	return os.WriteFile(filepath.Join(directory, "workspace.json"), metadata, 0o600)
+}
+
+func validWorkspaceID(value string) bool {
+	if value == "" || value == "." || value == ".." {
+		return false
+	}
+	for _, char := range value {
+		if (char < 'a' || char > 'z') && (char < '0' || char > '9') && char != '-' {
+			return false
+		}
+	}
+	return true
 }
 
 func ensureRuntimeFileSinkRoute(path string) error {
@@ -222,6 +346,14 @@ func newStudioService(source fs.FS, databasePath string) (*StudioService, error)
 	config, err := device.LoadConfig(source, "configs/devices.yaml")
 	if err != nil {
 		return nil, err
+	}
+	// The package-local constructor is used by deterministic tests. Production
+	// uses NewStudioService, where simulator runtimes bind real HSMS ports.
+	for index := range config.Devices {
+		if config.Devices[index].Driver == "simulator" {
+			config.Devices[index].Driver = "simulator-memory"
+			config.Devices[index].Role = "controller"
+		}
 	}
 	return newStudioServiceWithConfig(source, databasePath, config, "", source, "configs/routes.yaml", "configs/automations.yaml")
 }
@@ -299,16 +431,182 @@ func materializeRuntimeFile(source fs.FS, embeddedPath string, targetPath string
 	return nil
 }
 
-func (s *StudioService) start(ctx context.Context) {
-	s.manager.ConnectAuto(ctx, s.config)
+func (s *StudioService) ListWorkspaces() ([]WorkspaceSummary, error) {
+	entries, err := os.ReadDir(s.workspaceRoot)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]WorkspaceSummary, 0, len(entries))
+	for _, entry := range entries {
+		if !entry.IsDir() || !validWorkspaceID(entry.Name()) {
+			continue
+		}
+		directory := filepath.Join(s.workspaceRoot, entry.Name())
+		if _, err := os.Stat(filepath.Join(directory, "devices.yaml")); err != nil {
+			continue
+		}
+		metadata := workspaceMetadata{Name: entry.Name()}
+		if data, err := os.ReadFile(filepath.Join(directory, "workspace.json")); err == nil {
+			_ = json.Unmarshal(data, &metadata)
+		}
+		result = append(result, WorkspaceSummary{ID: entry.Name(), Name: metadata.Name, Path: directory, Active: entry.Name() == s.activeWorkspaceID})
+	}
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].Active != result[j].Active {
+			return result[i].Active
+		}
+		return strings.ToLower(result[i].Name) < strings.ToLower(result[j].Name)
+	})
+	return result, nil
+}
+
+func workspaceSlug(name string) string {
+	var result strings.Builder
+	separator := false
+	for _, char := range strings.ToLower(strings.TrimSpace(name)) {
+		if (char >= 'a' && char <= 'z') || (char >= '0' && char <= '9') {
+			result.WriteRune(char)
+			separator = false
+		} else if result.Len() > 0 && !separator {
+			result.WriteByte('-')
+			separator = true
+		}
+	}
+	value := strings.Trim(result.String(), "-")
+	if value == "" {
+		value = "workspace"
+	}
+	return value
+}
+
+func (s *StudioService) CreateWorkspace(name string) (WorkspaceSummary, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return WorkspaceSummary{}, fmt.Errorf("workspace name is required")
+	}
+	base := workspaceSlug(name)
+	id := base
+	for sequence := 2; ; sequence++ {
+		if _, err := os.Stat(filepath.Join(s.workspaceRoot, id)); os.IsNotExist(err) {
+			break
+		}
+		id = fmt.Sprintf("%s-%d", base, sequence)
+	}
+	directory := filepath.Join(s.workspaceRoot, id)
+	if err := initializeWorkspaceDirectory(s.packagedSource, "", directory, name, false); err != nil {
+		_ = os.RemoveAll(directory)
+		return WorkspaceSummary{}, err
+	}
+	return WorkspaceSummary{ID: id, Name: name, Path: directory}, nil
+}
+
+func (s *StudioService) DeleteWorkspace(id string) error {
+	if !validWorkspaceID(id) {
+		return fmt.Errorf("invalid workspace id")
+	}
+	if id == s.activeWorkspaceID {
+		return fmt.Errorf("switch to another workspace before deleting the active workspace")
+	}
+	target := filepath.Clean(filepath.Join(s.workspaceRoot, id))
+	root := filepath.Clean(s.workspaceRoot) + string(os.PathSeparator)
+	if !strings.HasPrefix(target+string(os.PathSeparator), root) {
+		return fmt.Errorf("workspace path escapes the workspace root")
+	}
+	return os.RemoveAll(target)
+}
+
+func (s *StudioService) SwitchWorkspace(id string) (WorkspaceSummary, error) {
+	if !validWorkspaceID(id) {
+		return WorkspaceSummary{}, fmt.Errorf("invalid workspace id")
+	}
+	directory := filepath.Join(s.workspaceRoot, id)
+	if err := migrateWorkspaceProfiles(directory); err != nil {
+		return WorkspaceSummary{}, err
+	}
+	config, err := device.LoadConfig(os.DirFS(directory), "devices.yaml")
+	if err != nil {
+		return WorkspaceSummary{}, err
+	}
+	fileOutput, err := sink.NewFile("file-events", filepath.Join(directory, "events", "canonical-events.jsonl"))
+	if err != nil {
+		return WorkspaceSummary{}, err
+	}
+	routes, err := router.Load(os.DirFS(directory), "routes.yaml", sink.NewMemory("mock-mq"), sink.NewMemory("quality-mq"), sink.NewMemory("thermal-mq"), fileOutput, s.store)
+	if err != nil {
+		return WorkspaceSummary{}, err
+	}
+	engine, err := automation.Load(os.DirFS(directory), "automations.yaml")
+	if err != nil {
+		return WorkspaceSummary{}, err
+	}
+	manager, err := device.NewManager(os.DirFS(directory), config, routes, engine, s.store, s.notify)
+	if err != nil {
+		return WorkspaceSummary{}, err
+	}
+	activePath := filepath.Join(filepath.Dir(s.workspaceRoot), "active-workspace")
+	if err := os.WriteFile(activePath, []byte(id+"\n"), 0o600); err != nil {
+		manager.Close()
+		return WorkspaceSummary{}, err
+	}
+
+	s.runtimeMu.Lock()
+	oldManager := s.manager
+	if s.watchCancel != nil {
+		s.watchCancel()
+		s.watchCancel = nil
+	}
+	s.manager, s.router, s.automation, s.config = manager, routes, engine, config
+	s.equipmentConfigPath = filepath.Join(directory, "devices.yaml")
+	s.ruleSource, s.profileSource = os.DirFS(directory), os.DirFS(directory)
+	s.runtimeConfigDir, s.fileSinkPath = directory, fileOutput.Path()
+	s.routeConfigPath, s.automationConfigPath = "routes.yaml", "automations.yaml"
+	s.activeWorkspaceID = id
+	appContext := s.appContext
+	s.runtimeMu.Unlock()
+	s.aiMu.Lock()
+	// A one-shot write permission is grounded in the runtime that produced it.
+	// Never carry permission cards across a workspace boundary.
+	s.pending = map[string]AIActionPermission{}
+	s.pendingEquipment = map[string]pendingEquipmentAction{}
+	s.aiMu.Unlock()
+	if oldManager != nil {
+		oldManager.Close()
+	}
+	if appContext != nil {
+		s.startRuntime(appContext)
+	}
+	s.notify()
+	workspaces, _ := s.ListWorkspaces()
+	for _, value := range workspaces {
+		if value.ID == id {
+			return value, nil
+		}
+	}
+	return WorkspaceSummary{ID: id, Name: id, Path: directory, Active: true}, nil
+}
+
+func (s *StudioService) startRuntime(ctx context.Context) {
+	s.runtimeMu.RLock()
+	manager, config := s.manager, s.config
+	s.runtimeMu.RUnlock()
+	manager.ConnectAuto(ctx, config)
 	watchCtx, cancel := context.WithCancel(ctx)
+	s.runtimeMu.Lock()
 	s.watchCancel = cancel
+	s.runtimeMu.Unlock()
 	if fingerprint, err := s.rulesFingerprint(); err == nil {
 		s.ruleReloadMu.Lock()
 		s.ruleFingerprint = fingerprint
 		s.ruleReloadMu.Unlock()
 	}
 	go s.watchRules(watchCtx)
+}
+
+func (s *StudioService) start(ctx context.Context) {
+	s.runtimeMu.Lock()
+	s.appContext = ctx
+	s.runtimeMu.Unlock()
+	s.startRuntime(ctx)
 }
 func (s *StudioService) updateSignal() <-chan struct{} { return s.updates }
 func (s *StudioService) copilotEventSignal() <-chan CopilotStreamEvent {
@@ -322,28 +620,56 @@ func (s *StudioService) notify() {
 }
 
 func (s *StudioService) Snapshot() StudioSnapshot {
+	s.runtimeMu.RLock()
+	manager, routes, engine := s.manager, s.router, s.automation
+	s.runtimeMu.RUnlock()
 	alarms, _ := s.store.Alarms(context.Background(), 200)
-	return StudioSnapshot{Devices: s.manager.Snapshots(), Routes: s.router.Rules(), Deliveries: s.router.Deliveries(), Automations: s.automation.Rules(), Alarms: alarms, Storage: s.store.Stats(context.Background()), Generated: time.Now()}
+	return StudioSnapshot{Devices: manager.Snapshots(), Routes: routes.Rules(), Deliveries: routes.Deliveries(), Automations: engine.Rules(), Alarms: alarms, Storage: s.store.Stats(context.Background()), Generated: time.Now()}
 }
 
 func (s *StudioService) close() error {
+	s.runtimeMu.Lock()
 	if s.watchCancel != nil {
 		s.watchCancel()
 	}
-	if s.manager != nil {
-		s.manager.Close()
+	manager := s.manager
+	s.manager = nil
+	s.runtimeMu.Unlock()
+	if manager != nil {
+		manager.Close()
 	}
 	return s.store.Close()
 }
 
 func (s *StudioService) ConnectDevice(id string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	s.runtimeMu.RLock()
+	manager := s.manager
+	timeout := 10 * time.Second
+	for _, definition := range s.config.Devices {
+		if definition.ID == id {
+			timeout = time.Duration(definition.Connection.ConnectTimeoutSeconds) * time.Second
+			break
+		}
+	}
+	s.runtimeMu.RUnlock()
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	return s.manager.Connect(ctx, id)
+	return manager.Connect(ctx, id)
 }
-func (s *StudioService) DisconnectDevice(id string) error { return s.manager.Disconnect(id) }
+func (s *StudioService) DisconnectDevice(id string) error {
+	s.runtimeMu.RLock()
+	manager := s.manager
+	defer s.runtimeMu.RUnlock()
+	return manager.Disconnect(id)
+}
 func (s *StudioService) EmitSimulatorScenario(id string, scenario string) error {
-	return s.manager.EmitScenario(id, scenario)
+	return s.EmitScenario(id, scenario)
+}
+func (s *StudioService) EmitScenario(id string, scenario string) error {
+	s.runtimeMu.RLock()
+	manager := s.manager
+	defer s.runtimeMu.RUnlock()
+	return manager.EmitScenario(id, scenario)
 }
 
 // PrepareEquipmentCommand validates a Profile command and creates a one-shot
@@ -355,6 +681,9 @@ func (s *StudioService) PrepareEquipmentCommand(request EquipmentCommandRequest)
 	}
 	if selected.State != driver.StateSelected {
 		return AIActionPermission{}, fmt.Errorf("device %s is not selected", selected.ID)
+	}
+	if selected.Role != "controller" {
+		return AIActionPermission{}, fmt.Errorf("device %s is an Equipment Twin; Profile commands are Host → Equipment", selected.ID)
 	}
 	var definition *device.AvailableCommand
 	for index := range selected.Available {
@@ -426,10 +755,14 @@ func (s *StudioService) PrepareEquipmentMessage(request EquipmentMessageRequest)
 	timeout := normalizeSendTimeout(request.TimeoutSeconds)
 	id := fmt.Sprintf("permission-%06d", s.permissionSequence.Add(1))
 	parameters := map[string]any{"wait": message.Wait, "timeoutSeconds": int(timeout / time.Second), "sml": request.SML}
+	direction, summaryTarget := "Host → Equipment", "equipment"
+	if selected.Role == "equipment-simulator" {
+		direction, summaryTarget = "Equipment → Host", "connected Host"
+	}
 	permission := AIActionPermission{
 		ID: id, Tool: "send.secs-message", EquipmentID: selected.ID, Command: name,
-		Summary:    fmt.Sprintf("Send raw %s%s to equipment", name, map[bool]string{true: " W"}[message.Wait]),
-		Risk:       "Raw SML bypasses Profile command semantics. Verify stream, function, W bit, item types, and values before allowing.",
+		Summary:    fmt.Sprintf("Send raw %s%s to %s (%s)", name, map[bool]string{true: " W"}[message.Wait], summaryTarget, direction),
+		Risk:       "Raw SML bypasses Profile semantics. Verify direction, stream, function, W bit, item types, and values before allowing.",
 		Parameters: parameters, ParameterDiff: map[string]ParameterChange{},
 		ExpiresAt: time.Now().Add(time.Duration(policy.TTLMinutes) * time.Minute),
 	}
@@ -487,8 +820,11 @@ func (s *StudioService) ResolveEquipmentAction(permissionID string, allow bool) 
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), action.Timeout)
 	defer cancel()
+	s.runtimeMu.RLock()
+	manager := s.manager
+	defer s.runtimeMu.RUnlock()
 	if action.Kind == "command" {
-		exchange, err := s.manager.ExecuteCommandNow(ctx, action.Command.EquipmentID, action.Command.Command, action.Command.Parameters, "operator-"+permissionID, permissionID)
+		exchange, err := manager.ExecuteCommandNow(ctx, action.Command.EquipmentID, action.Command.Command, action.Command.Parameters, "operator-"+permissionID, permissionID)
 		result := EquipmentActionResult{
 			Status: string(exchange.Command.Status), Message: fmt.Sprintf("%s completed with status %s", exchange.Command.Name, exchange.Command.Status),
 			Request: &exchange.Request, Reply: exchange.Reply,
@@ -500,7 +836,7 @@ func (s *StudioService) ResolveEquipmentAction(permissionID string, allow bool) 
 		}
 		return result, nil
 	}
-	exchange, err := s.manager.SendMessage(ctx, action.Permission.EquipmentID, action.Message)
+	exchange, err := manager.SendMessage(ctx, action.Permission.EquipmentID, action.Message)
 	result := EquipmentActionResult{Status: "succeeded", Message: "Message sent.", Request: &exchange.Request, Reply: exchange.Reply}
 	if action.Message.Wait && exchange.Reply != nil {
 		result.Message = fmt.Sprintf("Message sent; received %s.", exchange.Reply.Name())
@@ -700,6 +1036,137 @@ type ProfilePreview struct {
 type ProfileSaveResult struct {
 	Path            string   `json:"path"`
 	ReloadedDevices []string `json:"reloadedDevices"`
+}
+
+type MessageCatalogItem struct {
+	Stream      int    `json:"stream"`
+	Function    int    `json:"function"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Primary     bool   `json:"primary"`
+	SML         string `json:"sml"`
+}
+
+type MessageTemplateSaveRequest struct {
+	ProfilePath string `json:"profilePath"`
+	Kind        string `json:"kind"`
+	Name        string `json:"name"`
+	DisplayName string `json:"displayName"`
+	SML         string `json:"sml"`
+}
+
+func (s *StudioService) MessageCatalog() []MessageCatalogItem {
+	known := map[string][2]string{
+		"S1F1":  {"Are You Online", "Establish application-level communication"},
+		"S1F3":  {"Selected Equipment Status Request", "Request status variable values"},
+		"S1F13": {"Establish Communications Request", "GEM communication establishment"},
+		"S2F13": {"Equipment Constant Request", "Request equipment constants"},
+		"S2F15": {"New Equipment Constant Send", "Change equipment constants"},
+		"S2F17": {"Date and Time Request", "Request equipment clock"},
+		"S2F31": {"Date and Time Set", "Set equipment clock"},
+		"S2F33": {"Define Report", "Define data collection reports"},
+		"S2F35": {"Link Event Report", "Link reports to collection events"},
+		"S2F37": {"Enable Event Report", "Enable or disable event reports"},
+		"S2F41": {"Host Command Send", "Send a remote command"},
+		"S5F1":  {"Alarm Report Send", "Equipment alarm notification"},
+		"S5F3":  {"Enable Alarm Send", "Enable or disable alarms"},
+		"S5F5":  {"List Alarms Request", "Request alarm definitions"},
+		"S6F11": {"Event Report Send", "Equipment collection event"},
+		"S6F15": {"Event Report Request", "Request an event report"},
+		"S7F1":  {"Process Program Load Inquire", "Ask permission to download a recipe"},
+		"S7F3":  {"Process Program Send", "Download a recipe"},
+		"S7F5":  {"Process Program Request", "Upload a recipe"},
+		"S7F17": {"Delete Process Program", "Delete a recipe"},
+		"S10F3": {"Terminal Display Single", "Display one terminal message"},
+		"S10F5": {"Terminal Display Multi", "Display multiple terminal messages"},
+	}
+	result := make([]MessageCatalogItem, 0, 17*13)
+	for stream := 1; stream <= 17; stream++ {
+		for function := 1; function <= 13; function++ {
+			key := fmt.Sprintf("S%dF%d", stream, function)
+			result = append(result, catalogMessage(stream, function, known[key]))
+		}
+	}
+	// GEM streams contain commonly used functions above F13 (for example
+	// S2F41 Host Command Send). Keep the requested S1F1-S17F13 base matrix and
+	// add every known standard entry outside that rectangle.
+	for key, value := range known {
+		var stream, function int
+		if _, err := fmt.Sscanf(key, "S%dF%d", &stream, &function); err == nil && function > 13 {
+			result = append(result, catalogMessage(stream, function, value))
+		}
+	}
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].Stream != result[j].Stream {
+			return result[i].Stream < result[j].Stream
+		}
+		return result[i].Function < result[j].Function
+	})
+	return result
+}
+
+func catalogMessage(stream, function int, known [2]string) MessageCatalogItem {
+	key := fmt.Sprintf("S%dF%d", stream, function)
+	name, description := key, "Custom SECS-II message"
+	if known[0] != "" {
+		name, description = known[0], known[1]
+	}
+	primary := function%2 == 1
+	header := key
+	if primary {
+		header += " W"
+	}
+	return MessageCatalogItem{Stream: stream, Function: function, Name: name, Description: description, Primary: primary, SML: header + "\n."}
+}
+
+func (s *StudioService) SaveMessageTemplate(request MessageTemplateSaveRequest) (ProfileSaveResult, error) {
+	clean, err := safeProfilePath(request.ProfilePath)
+	if err != nil {
+		return ProfileSaveResult{}, err
+	}
+	data, err := fs.ReadFile(s.profileSource, clean)
+	if err != nil {
+		return ProfileSaveResult{}, err
+	}
+	compiled, err := profile.Decode(data)
+	if err != nil {
+		return ProfileSaveResult{}, err
+	}
+	message, err := driver.ParseOutboundSML(request.SML)
+	if err != nil {
+		return ProfileSaveResult{}, err
+	}
+	name := strings.TrimSpace(request.Name)
+	if name == "" {
+		return ProfileSaveResult{}, fmt.Errorf("template name is required")
+	}
+	displayName := strings.TrimSpace(request.DisplayName)
+	if displayName == "" {
+		displayName = name
+	}
+	document := compiled.EquipmentProfile
+	switch request.Kind {
+	case "command":
+		if message.Function%2 == 0 {
+			return ProfileSaveResult{}, fmt.Errorf("commands must use an odd primary function")
+		}
+		if document.Spec.Commands == nil {
+			document.Spec.Commands = map[string]profile.CommandDefinition{}
+		}
+		document.Spec.Commands[name] = profile.CommandDefinition{DisplayName: displayName, Stream: message.Stream, Function: message.Function, Wait: message.Wait, SML: request.SML, SuccessEvent: "message.accepted", FailureEvent: "message.failed"}
+	case "scenario":
+		if document.Spec.Scenarios == nil {
+			document.Spec.Scenarios = map[string]profile.SimulatorScenario{}
+		}
+		document.Spec.Scenarios[name] = profile.SimulatorScenario{DisplayName: displayName, Message: profile.MessageTemplate{Stream: message.Stream, Function: message.Function, Wait: message.Wait, SML: request.SML}}
+	default:
+		return ProfileSaveResult{}, fmt.Errorf("template kind must be command or scenario")
+	}
+	encoded, err := yaml.Marshal(document)
+	if err != nil {
+		return ProfileSaveResult{}, err
+	}
+	return s.SaveProfile(clean, string(encoded))
 }
 
 func (s *StudioService) ListProfiles() ([]ProfileSummary, error) {
@@ -976,16 +1443,20 @@ type RuleReloadResult struct {
 func (s *StudioService) ReloadRules() (RuleReloadResult, error) {
 	s.ruleReloadMu.Lock()
 	defer s.ruleReloadMu.Unlock()
-	routes, err := s.router.PrepareRules(s.ruleSource, s.routeConfigPath)
+	s.runtimeMu.RLock()
+	routerValue, automationValue := s.router, s.automation
+	source, routePath, automationPath := s.ruleSource, s.routeConfigPath, s.automationConfigPath
+	s.runtimeMu.RUnlock()
+	routes, err := routerValue.PrepareRules(source, routePath)
 	if err != nil {
 		return RuleReloadResult{}, err
 	}
-	automations, err := automation.ReadRules(s.ruleSource, s.automationConfigPath)
+	automations, err := automation.ReadRules(source, automationPath)
 	if err != nil {
 		return RuleReloadResult{}, err
 	}
-	s.router.ReplaceRules(routes)
-	s.automation.ReplaceRules(automations)
+	routerValue.ReplaceRules(routes)
+	automationValue.ReplaceRules(automations)
 	if fingerprint, err := s.rulesFingerprint(); err == nil {
 		s.ruleFingerprint = fingerprint
 	}
@@ -994,11 +1465,14 @@ func (s *StudioService) ReloadRules() (RuleReloadResult, error) {
 }
 
 func (s *StudioService) rulesFingerprint() ([32]byte, error) {
-	routes, err := fs.ReadFile(s.ruleSource, s.routeConfigPath)
+	s.runtimeMu.RLock()
+	source, routePath, automationPath := s.ruleSource, s.routeConfigPath, s.automationConfigPath
+	s.runtimeMu.RUnlock()
+	routes, err := fs.ReadFile(source, routePath)
 	if err != nil {
 		return [32]byte{}, err
 	}
-	automations, err := fs.ReadFile(s.ruleSource, s.automationConfigPath)
+	automations, err := fs.ReadFile(source, automationPath)
 	if err != nil {
 		return [32]byte{}, err
 	}
@@ -1447,6 +1921,9 @@ func commandIntent(question string) bool {
 }
 
 func (s *StudioService) newCommandPermission(selected device.Snapshot) (AIActionPermission, error) {
+	if selected.Role != "controller" {
+		return AIActionPermission{}, fmt.Errorf("device %s is an Equipment Twin; commands are Host → Equipment definitions", selected.ID)
+	}
 	policy, err := s.PermissionPolicy()
 	if err != nil {
 		return AIActionPermission{}, err
@@ -1519,7 +1996,10 @@ func (s *StudioService) ResolveAIAction(permissionID string, allow bool) Copilot
 	}
 	_ = s.store.UpdateCopilotPermission(context.Background(), permissionID, "allowed")
 	correlationID := "ai-" + permission.ID
-	value, err := s.manager.SubmitCommand(permission.EquipmentID, permission.Command, permission.Parameters, correlationID, permission.ID)
+	s.runtimeMu.RLock()
+	manager := s.manager
+	value, err := manager.SubmitCommand(permission.EquipmentID, permission.Command, permission.Parameters, correlationID, permission.ID)
+	s.runtimeMu.RUnlock()
 	if err != nil {
 		reply := CopilotReply{Answer: "命令执行失败：" + err.Error(), Evidence: []string{"permission allowed", "command rejected before send"}}
 		s.recordCopilotResolution(permission.SessionID, permission.EquipmentID, reply)

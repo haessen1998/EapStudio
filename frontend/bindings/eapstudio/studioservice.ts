@@ -72,12 +72,24 @@ export function CreateCopilotSession(scope: string): $CancellablePromise<sqlite$
     return $Call.ByID(1989280319, scope);
 }
 
+export function CreateWorkspace(name: string): $CancellablePromise<$models.WorkspaceSummary> {
+    return $Call.ByID(1490058900, name);
+}
+
 export function DeleteCopilotSession(sessionID: string): $CancellablePromise<void> {
     return $Call.ByID(454030280, sessionID);
 }
 
+export function DeleteWorkspace(id: string): $CancellablePromise<void> {
+    return $Call.ByID(2907551233, id);
+}
+
 export function DisconnectDevice(id: string): $CancellablePromise<void> {
     return $Call.ByID(4192432587, id);
+}
+
+export function EmitScenario(id: string, scenario: string): $CancellablePromise<void> {
+    return $Call.ByID(1161358726, id, scenario);
 }
 
 export function EmitSimulatorScenario(id: string, scenario: string): $CancellablePromise<void> {
@@ -104,8 +116,16 @@ export function ListProfiles(): $CancellablePromise<$models.ProfileSummary[] | n
     return $Call.ByID(3731172137);
 }
 
+export function ListWorkspaces(): $CancellablePromise<$models.WorkspaceSummary[] | null> {
+    return $Call.ByID(4100989317);
+}
+
 export function MergePackagedDemoDevices(): $CancellablePromise<$models.EquipmentMergeResult> {
     return $Call.ByID(956824401);
+}
+
+export function MessageCatalog(): $CancellablePromise<$models.MessageCatalogItem[] | null> {
+    return $Call.ByID(1456522893);
 }
 
 export function PermissionPolicy(): $CancellablePromise<$models.PermissionPolicy> {
@@ -176,6 +196,10 @@ export function SaveEquipmentConfig(config: device$0.Config): $CancellablePromis
     return $Call.ByID(73226380, config);
 }
 
+export function SaveMessageTemplate(request: $models.MessageTemplateSaveRequest): $CancellablePromise<$models.ProfileSaveResult> {
+    return $Call.ByID(1338406591, request);
+}
+
 export function SavePermissionPolicy(value: $models.PermissionPolicy): $CancellablePromise<void> {
     return $Call.ByID(3978155135, value);
 }
@@ -186,6 +210,10 @@ export function SaveProfile(path: string, yamlText: string): $CancellablePromise
 
 export function Snapshot(): $CancellablePromise<$models.StudioSnapshot> {
     return $Call.ByID(799204223);
+}
+
+export function SwitchWorkspace(id: string): $CancellablePromise<$models.WorkspaceSummary> {
+    return $Call.ByID(3086207836, id);
 }
 
 export function TestAIConfiguration(config: ai$0.Config, apiKey: string): $CancellablePromise<string> {
