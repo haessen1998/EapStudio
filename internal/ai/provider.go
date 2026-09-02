@@ -26,6 +26,12 @@ type Request struct {
 	Attachments []Attachment
 }
 
+type ToolResult struct {
+	Name   string         `json:"name"`
+	Input  map[string]any `json:"input"`
+	Result any            `json:"result"`
+}
+
 type Attachment struct {
 	Name      string `json:"name"`
 	MediaType string `json:"mediaType"`

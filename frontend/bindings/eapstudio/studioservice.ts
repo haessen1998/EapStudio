@@ -88,6 +88,10 @@ export function EquipmentConfigPath(): $CancellablePromise<string> {
     return $Call.ByID(1315334092);
 }
 
+export function FileSinkPath(): $CancellablePromise<string> {
+    return $Call.ByID(687448469);
+}
+
 export function ListAIProfiles(): $CancellablePromise<$models.AIProfileConfig[] | null> {
     return $Call.ByID(874361723);
 }
@@ -96,8 +100,20 @@ export function ListCopilotSessions(search: string): $CancellablePromise<sqlite$
     return $Call.ByID(727334084, search);
 }
 
+export function ListProfiles(): $CancellablePromise<$models.ProfileSummary[] | null> {
+    return $Call.ByID(3731172137);
+}
+
 export function MergePackagedDemoDevices(): $CancellablePromise<$models.EquipmentMergeResult> {
     return $Call.ByID(956824401);
+}
+
+export function PermissionPolicy(): $CancellablePromise<$models.PermissionPolicy> {
+    return $Call.ByID(2226697794);
+}
+
+export function PreviewProfileEvent(yamlText: string, eventName: string, data: { [_ in string]?: any } | null): $CancellablePromise<$models.ProfilePreview> {
+    return $Call.ByID(2503169246, yamlText, eventName, data);
 }
 
 export function QueryCommandHistory(query: sqlite$0.HistoryQuery): $CancellablePromise<sqlite$0.CommandPage> {
@@ -110,6 +126,10 @@ export function QueryEventHistory(query: sqlite$0.HistoryQuery): $CancellablePro
 
 export function QueryTraceHistory(query: sqlite$0.HistoryQuery): $CancellablePromise<sqlite$0.TracePage> {
     return $Call.ByID(1853524174, query);
+}
+
+export function ReadProfile(path: string): $CancellablePromise<$models.ProfileDocument> {
+    return $Call.ByID(2837848884, path);
 }
 
 export function ReloadRules(): $CancellablePromise<$models.RuleReloadResult> {
@@ -132,6 +152,14 @@ export function SaveEquipmentConfig(config: device$0.Config): $CancellablePromis
     return $Call.ByID(73226380, config);
 }
 
+export function SavePermissionPolicy(value: $models.PermissionPolicy): $CancellablePromise<void> {
+    return $Call.ByID(3978155135, value);
+}
+
+export function SaveProfile(path: string, yamlText: string): $CancellablePromise<$models.ProfileSaveResult> {
+    return $Call.ByID(3475757615, path, yamlText);
+}
+
 export function Snapshot(): $CancellablePromise<$models.StudioSnapshot> {
     return $Call.ByID(799204223);
 }
@@ -142,4 +170,8 @@ export function TestAIConfiguration(config: ai$0.Config, apiKey: string): $Cance
 
 export function UpdateCopilotSessionScope(sessionID: string, scope: string): $CancellablePromise<void> {
     return $Call.ByID(3286257558, sessionID, scope);
+}
+
+export function ValidateProfileYAML(path: string, yamlText: string): $CancellablePromise<$models.ProfileValidation> {
+    return $Call.ByID(2324139849, path, yamlText);
 }

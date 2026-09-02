@@ -43,7 +43,7 @@ func TestCompareAndMergePackagedEquipmentConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(merged.Added) != len(packaged.Devices)-2 || !merged.RestartRequired {
+	if len(merged.Added) != len(packaged.Devices)-2 || merged.RestartRequired {
 		t.Fatalf("merge = %#v", merged)
 	}
 	saved, err := device.LoadConfig(os.DirFS(filepath.Dir(configPath)), filepath.Base(configPath))
@@ -64,8 +64,8 @@ func TestCompareAndMergePackagedEquipmentConfig(t *testing.T) {
 	if err != nil || reordered.Devices[0].ID != order[0] {
 		t.Fatalf("reordered = %#v, err = %v", reordered, err)
 	}
-	wantRuntimeFirst := order[len(order)-2]
-	if snapshots := service.Snapshot().Devices; len(snapshots) != len(runtimeConfig.Devices) || snapshots[0].ID != wantRuntimeFirst {
+	wantRuntimeFirst := order[0]
+	if snapshots := service.Snapshot().Devices; len(snapshots) != len(order) || snapshots[0].ID != wantRuntimeFirst {
 		t.Fatalf("runtime order was not updated: %#v", snapshots)
 	}
 }
@@ -201,6 +201,9 @@ func TestCopilotCommandRequiresExplicitPermission(t *testing.T) {
 	if request.Permission == nil || request.Permission.Command != "send.recipe" {
 		t.Fatalf("permission = %#v", request.Permission)
 	}
+	if len(request.Permission.ParameterDiff) == 0 || request.Permission.ExpiresAt.Before(time.Now()) {
+		t.Fatalf("permission change preview/expiry = %#v", request.Permission)
+	}
 	denied := service.ResolveAIAction(request.Permission.ID, false)
 	if !strings.Contains(denied.Answer, "拒绝") || len(snapshotDevice(t, service, "ETCHER-01").Commands) != 0 {
 		t.Fatalf("denied reply=%#v commands=%#v", denied, snapshotDevice(t, service, "ETCHER-01").Commands)
@@ -220,6 +223,23 @@ func TestCopilotCommandRequiresExplicitPermission(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatalf("approved command did not complete: %#v", snapshotDevice(t, service, "ETCHER-01").Commands)
+}
+
+func TestPermissionPolicyCanDenyAIWrites(t *testing.T) {
+	service, err := newStudioService(os.DirFS("."), t.TempDir()+"/permission-policy.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer service.close()
+	policy := defaultPermissionPolicy()
+	policy.Mode = "deny"
+	if err := service.SavePermissionPolicy(policy); err != nil {
+		t.Fatal(err)
+	}
+	reply := service.AskCopilot("请发送命令", "ETCHER-01", nil)
+	if reply.Permission != nil || !strings.Contains(reply.Answer, "阻止") {
+		t.Fatalf("reply = %#v", reply)
+	}
 }
 
 func TestCopilotStreamPersistsConversation(t *testing.T) {

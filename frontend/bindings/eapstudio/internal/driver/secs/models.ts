@@ -44,3 +44,19 @@ export interface Message {
     "ack"?: number | null;
     "metadata"?: { [_ in string]?: string } | null;
 }
+
+export interface ProtocolDiagnostics {
+    "dataSent": number;
+    "dataReceived": number;
+    "dataErrors": number;
+    "decodeErrors": number;
+    "replyMismatches": number;
+    "reconnects": number;
+    "inflight": number;
+    "linktestSent": number;
+    "linktestReceived": number;
+    "linktestErrors": number;
+    "separateReceived": number;
+    "rejectSent": number;
+    "rejectReceived": number;
+}

@@ -23,6 +23,8 @@ type Store struct {
 	traceCh chan driver.Message
 	dropped atomic.Uint64
 	close   sync.Once
+	traceMu sync.RWMutex
+	closed  atomic.Bool
 	done    chan struct{}
 }
 
@@ -78,6 +80,11 @@ func (s *Store) Name() string { return "sqlite-history" }
 // RecordTrace never blocks the protocol receive path. A bounded queue protects
 // the process; dropped records are observable through Stats.
 func (s *Store) RecordTrace(value driver.Message) {
+	s.traceMu.RLock()
+	defer s.traceMu.RUnlock()
+	if s.closed.Load() {
+		return
+	}
 	select {
 	case s.traceCh <- value:
 	default:
@@ -148,7 +155,13 @@ func (s *Store) Stats(ctx context.Context) Stats {
 }
 
 func (s *Store) Close() error {
-	s.close.Do(func() { close(s.traceCh); <-s.done })
+	s.close.Do(func() {
+		s.traceMu.Lock()
+		s.closed.Store(true)
+		close(s.traceCh)
+		s.traceMu.Unlock()
+		<-s.done
+	})
 	return s.db.Close()
 }
 
@@ -204,6 +217,9 @@ CREATE TABLE IF NOT EXISTS ai_profiles (
   id TEXT PRIMARY KEY, name TEXT NOT NULL, provider TEXT NOT NULL,
   base_url TEXT, model TEXT, api_key_cipher BLOB, api_key_nonce BLOB,
   is_default INTEGER NOT NULL DEFAULT 0, updated_at DATETIME NOT NULL
+);
+CREATE TABLE IF NOT EXISTS app_settings (
+  key TEXT PRIMARY KEY, value_json TEXT NOT NULL, updated_at DATETIME NOT NULL
 );
 `)
 	return err

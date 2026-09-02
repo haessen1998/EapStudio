@@ -5,6 +5,12 @@ routes:
       equipment: ["*"]
     sinks: [sqlite-history]
 
+  - name: canonical-file-audit
+    match:
+      names: ["*"]
+      equipment: ["*"]
+    sinks: [file-events]
+
   - name: shared-material-flow
     match:
       names: [material.*, recipe.*]

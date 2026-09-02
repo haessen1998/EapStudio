@@ -53,6 +53,8 @@ export interface CopilotPermission {
     "summary": string;
     "risk": string;
     "parameters": { [_ in string]?: any } | null;
+    "parameterDiff"?: { [_ in string]?: any } | null;
+    "expiresAt"?: string;
 }
 
 export interface CopilotSession {

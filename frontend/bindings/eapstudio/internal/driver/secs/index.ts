@@ -7,5 +7,6 @@ export {
 } from "./models.js";
 
 export type {
-    Message
+    Message,
+    ProtocolDiagnostics
 } from "./models.js";

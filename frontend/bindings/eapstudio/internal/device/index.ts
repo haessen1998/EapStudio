@@ -5,6 +5,7 @@ export type {
     Config,
     ConnectionConfig,
     Definition,
+    RuntimeDiagnostics,
     SimulatorScenario,
     Snapshot
 } from "./models.js";

@@ -3,10 +3,19 @@
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
+import * as ai$0 from "./internal/ai/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
 import * as automation$0 from "./internal/automation/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
 import * as device$0 from "./internal/device/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
+import * as secs$0 from "./internal/driver/secs/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
+import * as event$0 from "./internal/event/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
 import * as router$0 from "./internal/router/models.js";
@@ -25,6 +34,8 @@ export interface AIActionPermission {
     "summary": string;
     "risk": string;
     "parameters": { [_ in string]?: any } | null;
+    "parameterDiff": { [_ in string]?: ParameterChange } | null;
+    "expiresAt": string;
 }
 
 export interface AIProfileConfig {
@@ -43,6 +54,7 @@ export interface CopilotReply {
     "evidence": string[] | null;
     "suggestions": string[] | null;
     "permission"?: AIActionPermission | null;
+    "tools"?: ai$0.ToolResult[] | null;
 }
 
 export interface CopilotStreamEvent {
@@ -71,6 +83,51 @@ export interface EquipmentMergeResult {
     "added": string[] | null;
     "path": string;
     "restartRequired": boolean;
+}
+
+export interface ParameterChange {
+    "before"?: any;
+    "after": any;
+}
+
+export interface PermissionPolicy {
+    "mode": string;
+    "equipment": string[] | null;
+    "commands": string[] | null;
+    "ttlMinutes": number;
+}
+
+export interface ProfileDocument {
+    "path": string;
+    "yaml": string;
+}
+
+export interface ProfilePreview {
+    "message": secs$0.Message;
+    "events": event$0.Event[] | null;
+}
+
+export interface ProfileSaveResult {
+    "path": string;
+    "reloadedDevices": string[] | null;
+}
+
+export interface ProfileSummary {
+    "path": string;
+    "name": string;
+    "vendor": string;
+    "model": string;
+    "version": string;
+    "adapter": string;
+    "valid": boolean;
+    "error"?: string;
+}
+
+export interface ProfileValidation {
+    "valid": boolean;
+    "error"?: string;
+    "summary": ProfileSummary;
+    "warnings": string[] | null;
 }
 
 export interface RuleReloadResult {

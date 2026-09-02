@@ -59,20 +59,20 @@ npm run build
 
 ## Configuration
 
-- `configs/devices.yaml` is the packaged equipment template. On first run it is copied to the OS user config directory as `EapStudio/devices.yaml`; Settings edits that runtime file and reports that a restart is required.
+- `configs/devices.yaml` is the packaged equipment template. On first run it is copied to the OS user config directory as `EapStudio/devices.yaml`; that runtime file is the durable source for equipment order and definitions.
 - `profiles/demo/etcher-x100.yaml` defines variables, reports, events, and field mappings for a model.
 - `configs/routes.yaml` maps canonical event-name and equipment-ID glob selectors to sinks.
 - `configs/automations.yaml` maps Event and equipment glob selectors to Commands and parameter projections.
 
 The sample routes include shared material flow, Etcher production, AOI quality, an `AOI-01` exact exception, Oven thermal events, and a catch-all SQLite history route. The sample automations demonstrate common material-arrival recipe selection plus AOI review and Oven temperature-deviation actions.
 
-At first production startup, `routes.yaml` and `automations.yaml` are copied beside the runtime `devices.yaml`. They are watched for changes and are validated and swapped together within about 1.5 seconds; invalid YAML leaves the last valid rules active. Router and Automation edits therefore do not require a restart. Equipment/Profile/driver edits still require a restart because they replace DeviceRuntime instances.
+At first production startup, `routes.yaml`, `automations.yaml`, and packaged Profiles are copied beside the runtime `devices.yaml` without overwriting existing runtime edits. Rules are watched and atomically swapped within about 1.5 seconds. Equipment changes and Profile Workbench saves hot-rebuild only affected DeviceRuntime instances; unchanged equipment keeps its connection and live buffers.
 
 Keep equipment identity out of the canonical name: use `wafer.started` with `equipmentId: AOI-01`, not `AOI.01.wafer.started`. A common route can select `names: [wafer.*]` plus `equipment: [AOI-*]`, while another rule selects `equipment: [AOI-01]` for additional sinks. Every matching route contributes sinks and duplicate sink deliveries are removed. Automation rules are additive, so common and device-specific rules may both create Commands.
 
 The demo Profile declares reverse-mapped canonical scenarios and arbitrary SxFy templates. `material-arrival` and `wafer-start` use `GenericGemAdapter.BuildEvent` to generate S6F11 CEID/RPTID/value structures. `alarm-raised`, `alarm-cleared`, `remote-command`, and `recipe-download` demonstrate inbound S5F1 plus outbound S2F41 and S7F3 without hard-coded simulator methods.
 
-Protocol traces, including SML and raw hex when available, are queued from the fast path into `protocol_traces`. Canonical events reach `domain_events` through the async Router sink; commands and the alarm projection use separate tables in the same WAL-enabled SQLite database. This keeps writes isolated while preserving correlation queries across one durable history.
+Protocol traces, including SML and raw hex when available, are queued from the fast path into `protocol_traces`. Canonical events reach `domain_events` through the async Router sink; commands and the alarm projection use separate tables in the same WAL-enabled SQLite database. The real `file-events` sink also appends matching canonical events as JSONL under the runtime config directory. This keeps writes isolated while preserving correlation queries across one durable history.
 
 ## Message contract
 
@@ -99,7 +99,11 @@ To connect real equipment, change a device's `driver` from `simulator` to `go-se
 - `frontend/src/components/ui`: shadcn/ui-style primitives.
 - `frontend/src/components/ai-elements`: Copilot conversation, message, tool, and prompt components.
 
-The current Copilot is deterministic and grounded in the live runtime/Profile snapshot. `StudioService.AskCopilot` is the provider boundary for adding OpenAI or another compatible model later; credentials and model calls stay in Go, outside the frontend and protocol response path.
+The local Copilot mode is a deterministic Runtime inspector rather than a language model. Responses and Chat configurations use application-controlled typed read tools (`runtime.snapshot`, message/event/command history, and Profile inventory) before model inference; tool results are visible in the conversation. Credentials and model calls stay in Go, outside the frontend and protocol response path.
+
+The Workbench lists writable runtime Profiles, applies strict schema/compiler validation, previews Canonical Event → Adapter.BuildEvent → SECS → Adapter.Parse round trips, and hot reloads devices using a saved Profile. Device detail exposes connection attempts, lifecycle detail, IN/OUT counts, parse failures, queue drops, command failures, and the last transport error.
+
+AI write policy is persisted in SQLite. It supports deny-all or allowlist-plus-explicit-approval, equipment/command glob allowlists, and approval expiry. It never auto-approves a write. Permission cards show a parameter diff against the previous command of the same type; command execution outcomes remain queryable on the Commands page and through SQLite history.
 
 The Settings page maintains a list of local, OpenAI Responses API compatible, and Chat Completions compatible configurations, with one explicit runtime default. An API Key entered in Settings is passed to Go for the current process and is never written to localStorage; `EAPSTUDIO_AI_API_KEY` remains the fallback. OpenAI Responses profiles receive a current default model when an older saved profile has an empty model. The Copilot supports up to four images or files (5 MB each): Responses receives native `input_image`/`input_file` content, while Chat-compatible endpoints receive images and supported text documents. Provider errors are decoded and displayed in the conversation. The equipment editor persists IDs, display badges, Profile paths, Adapter names, drivers, and connection settings. `generic-gem` is built in, while model-specific Adapter names must be registered in the backend registry. Read-only questions are answered from the selected DeviceRuntime snapshot. A write request such as sending `send.recipe` produces a typed Allow/Deny permission card; only **Allow once** submits the command to the device queue.
 

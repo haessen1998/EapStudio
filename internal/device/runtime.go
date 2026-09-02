@@ -33,13 +33,35 @@ type Runtime struct {
 	onChange   func()
 	simCancel  context.CancelFunc
 	simSeq     atomic.Uint64
+	shutdown   sync.Once
 
-	mu         sync.RWMutex
-	state      driver.ConnectionState
-	detail     string
-	messages   []driver.Message
-	events     []event.Event
-	commandLog []command.Command
+	mu          sync.RWMutex
+	state       driver.ConnectionState
+	detail      string
+	messages    []driver.Message
+	events      []event.Event
+	commandLog  []command.Command
+	diagnostics RuntimeDiagnostics
+}
+
+type RuntimeDiagnostics struct {
+	ConnectAttempts uint64                     `json:"connectAttempts"`
+	MessagesIn      uint64                     `json:"messagesIn"`
+	MessagesOut     uint64                     `json:"messagesOut"`
+	ParseErrors     uint64                     `json:"parseErrors"`
+	QueueDrops      uint64                     `json:"queueDrops"`
+	CommandFailures uint64                     `json:"commandFailures"`
+	LastConnectedAt *time.Time                 `json:"lastConnectedAt,omitempty"`
+	LastMessageAt   *time.Time                 `json:"lastMessageAt,omitempty"`
+	LastError       string                     `json:"lastError,omitempty"`
+	Protocol        driver.ProtocolDiagnostics `json:"protocol"`
+}
+
+func (r *Runtime) Shutdown() {
+	r.shutdown.Do(func() {
+		_ = r.Disconnect()
+		close(r.stop)
+	})
 }
 
 type Recorder interface {
@@ -78,6 +100,7 @@ type Snapshot struct {
 	Events      []event.Event          `json:"events"`
 	Commands    []command.Command      `json:"commands"`
 	Scenarios   []SimulatorScenario    `json:"scenarios"`
+	Diagnostics RuntimeDiagnostics     `json:"diagnostics"`
 }
 
 func NewRuntime(definition Definition, compiled *profile.CompiledProfile, protocol driver.Driver, adapter equipment.Adapter, routes *router.Router, engine *automation.Engine, recorder Recorder, onChange func()) *Runtime {
@@ -90,7 +113,13 @@ func NewRuntime(definition Definition, compiled *profile.CompiledProfile, protoc
 }
 
 func (r *Runtime) Connect(ctx context.Context) error {
+	r.mu.Lock()
+	r.diagnostics.ConnectAttempts++
+	r.mu.Unlock()
 	if err := r.driver.Open(ctx); err != nil {
+		r.mu.Lock()
+		r.diagnostics.LastError = err.Error()
+		r.mu.Unlock()
 		return err
 	}
 	if _, ok := r.driver.(*driver.SimulatorDriver); ok {
@@ -185,6 +214,10 @@ func (r *Runtime) receive(message driver.Message) {
 	select {
 	case r.queue <- message:
 	default:
+		r.mu.Lock()
+		r.diagnostics.QueueDrops++
+		r.diagnostics.LastError = "event pipeline queue is full"
+		r.mu.Unlock()
 		r.stateChanged(driver.StateError, "event pipeline queue is full")
 	}
 }
@@ -197,6 +230,10 @@ func (r *Runtime) process() {
 		case message := <-r.queue:
 			events, err := r.adapter.Parse(context.Background(), message, r.profile)
 			if err != nil {
+				r.mu.Lock()
+				r.diagnostics.ParseErrors++
+				r.diagnostics.LastError = err.Error()
+				r.mu.Unlock()
 				r.stateChanged(driver.StateError, err.Error())
 				continue
 			}
@@ -241,6 +278,10 @@ func (r *Runtime) executeCommand(value command.Command) {
 	value.CompletedAt = &now
 	eventName := definition.SuccessEvent
 	if err != nil {
+		r.mu.Lock()
+		r.diagnostics.CommandFailures++
+		r.diagnostics.LastError = err.Error()
+		r.mu.Unlock()
 		value.Status = command.StatusFailed
 		value.Error = err.Error()
 		eventName = definition.FailureEvent
@@ -360,6 +401,13 @@ func (r *Runtime) stateChanged(state driver.ConnectionState, detail string) {
 	r.mu.Lock()
 	r.state = state
 	r.detail = detail
+	if state == driver.StateSelected {
+		now := time.Now()
+		r.diagnostics.LastConnectedAt = &now
+	}
+	if state == driver.StateError {
+		r.diagnostics.LastError = detail
+	}
 	r.mu.Unlock()
 	r.changed()
 }
@@ -371,6 +419,16 @@ func (r *Runtime) recordMessage(value driver.Message) {
 		value.Metadata["rawEncodingError"] = err.Error()
 	}
 	r.mu.Lock()
+	if value.Direction == driver.DirectionIn {
+		r.diagnostics.MessagesIn++
+	} else {
+		r.diagnostics.MessagesOut++
+	}
+	now := value.Timestamp
+	if now.IsZero() {
+		now = time.Now()
+	}
+	r.diagnostics.LastMessageAt = &now
 	r.messages = append(r.messages, value)
 	if len(r.messages) > 100 {
 		r.messages = append([]driver.Message(nil), r.messages[len(r.messages)-100:]...)
@@ -432,5 +490,9 @@ func (r *Runtime) Snapshot() Snapshot {
 		scenario := r.profile.Spec.Simulator.Scenarios[name]
 		scenarios = append(scenarios, SimulatorScenario{ID: name, DisplayName: scenario.DisplayName, Event: scenario.Event, Direction: scenario.Direction, Stream: scenario.Message.Stream, Function: scenario.Message.Function})
 	}
-	return Snapshot{ID: r.definition.ID, Badge: r.definition.Badge, Name: r.definition.Name, Profile: r.definition.Profile, ProfileName: r.profile.Metadata.Name, Vendor: r.profile.Metadata.Vendor, Model: r.profile.Metadata.Model, Driver: r.definition.Driver, Adapter: r.adapter.Name(), AutoConnect: r.definition.AutoConnect, Protocol: r.definition.Connection.Protocol, Mode: r.definition.Connection.Mode, Host: r.definition.Connection.Host, Port: r.definition.Connection.Port, SessionID: r.definition.Connection.SessionID, State: r.state, StateDetail: r.detail, Messages: messages, Events: events, Commands: commands, Scenarios: scenarios}
+	diagnostics := r.diagnostics
+	if provider, ok := r.driver.(driver.DiagnosticProvider); ok {
+		diagnostics.Protocol = provider.ProtocolDiagnostics()
+	}
+	return Snapshot{ID: r.definition.ID, Badge: r.definition.Badge, Name: r.definition.Name, Profile: r.definition.Profile, ProfileName: r.profile.Metadata.Name, Vendor: r.profile.Metadata.Vendor, Model: r.profile.Metadata.Model, Driver: r.definition.Driver, Adapter: r.adapter.Name(), AutoConnect: r.definition.AutoConnect, Protocol: r.definition.Connection.Protocol, Mode: r.definition.Connection.Mode, Host: r.definition.Connection.Host, Port: r.definition.Connection.Port, SessionID: r.definition.Connection.SessionID, State: r.state, StateDetail: r.detail, Messages: messages, Events: events, Commands: commands, Scenarios: scenarios, Diagnostics: diagnostics}
 }

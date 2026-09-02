@@ -135,6 +135,7 @@ type Page =
   | "events"
   | "commands"
   | "alarms"
+  | "workbench"
   | "router"
   | "simulator"
   | "settings";
@@ -146,6 +147,7 @@ const navItems: { id: Page; label: string; icon: typeof Activity }[] = [
   { id: "events", label: "Events", icon: Waves },
   { id: "commands", label: "Commands", icon: Play },
   { id: "alarms", label: "Alarms", icon: BellRing },
+  { id: "workbench", label: "Workbench", icon: Code2 },
   { id: "router", label: "Router", icon: Route },
   { id: "simulator", label: "Simulator", icon: FlaskConical },
 ];
@@ -666,6 +668,7 @@ function App() {
           {page === "router" && (
             <RouterPage snapshot={snapshot} query={normalizedQuery} />
           )}
+          {page === "workbench" && <ProfileWorkbench />}
           {page === "simulator" && (
             <Simulator
               devices={devices}
@@ -967,6 +970,71 @@ function DeviceDetail({
           icon={Database}
         />
       </div>
+      <Card className="diagnostics-card">
+        <CardHeader className="flex-row items-center justify-between">
+          <div>
+            <CardTitle>Connection & protocol diagnostics</CardTitle>
+            <CardDescription>
+              {device.stateDetail || "No lifecycle detail reported"}
+            </CardDescription>
+          </div>
+          <Badge variant={device.diagnostics.lastError ? "warning" : "success"}>
+            {device.diagnostics.lastError ? "attention" : "healthy"}
+          </Badge>
+        </CardHeader>
+        <CardContent className="diagnostics-grid">
+          <span>
+            <b>{device.diagnostics.connectAttempts}</b>connect attempts
+          </span>
+          <span>
+            <b>{device.diagnostics.messagesIn}</b>messages in
+          </span>
+          <span>
+            <b>{device.diagnostics.messagesOut}</b>messages out
+          </span>
+          <span>
+            <b>{device.diagnostics.parseErrors}</b>parse errors
+          </span>
+          <span>
+            <b>{device.diagnostics.queueDrops}</b>queue drops
+          </span>
+          <span>
+            <b>{device.diagnostics.commandFailures}</b>command failures
+          </span>
+          {device.driver === "go-secs" && (
+            <>
+              <span>
+                <b>{device.diagnostics.protocol.reconnects}</b>HSMS reconnects
+              </span>
+              <span>
+                <b>{device.diagnostics.protocol.inflight}</b>transactions in
+                flight
+              </span>
+              <span>
+                <b>
+                  {device.diagnostics.protocol.linktestReceived}/
+                  {device.diagnostics.protocol.linktestSent}
+                </b>
+                linktest OK / sent
+              </span>
+              <span>
+                <b>{device.diagnostics.protocol.linktestErrors}</b>linktest / T6
+                errors
+              </span>
+              <span>
+                <b>{device.diagnostics.protocol.rejectReceived}</b>peer rejects
+              </span>
+              <span>
+                <b>{device.diagnostics.protocol.separateReceived}</b>peer
+                separates
+              </span>
+            </>
+          )}
+          {device.diagnostics.lastError && (
+            <p>{device.diagnostics.lastError}</p>
+          )}
+        </CardContent>
+      </Card>
       <div className="architecture-line">
         <div>
           <Radio />
@@ -2121,6 +2189,7 @@ function SettingsPage({
   );
   const [draggedEquipmentKey, setDraggedEquipmentKey] = useState("");
   const [equipmentPath, setEquipmentPath] = useState("");
+  const [fileSinkPath, setFileSinkPath] = useState("");
   const [equipmentStatus, setEquipmentStatus] = useState("");
   const [configComparison, setConfigComparison] =
     useState<ConfigComparison | null>(null);
@@ -2133,6 +2202,13 @@ function SettingsPage({
     return [7, 30, 90, 365].includes(value) ? value : 90;
   });
   const [retentionStatus, setRetentionStatus] = useState("");
+  const [permissionPolicy, setPermissionPolicy] = useState({
+    mode: "ask",
+    equipment: ["*"],
+    commands: ["*"],
+    ttlMinutes: 5,
+  });
+  const [permissionStatus, setPermissionStatus] = useState("");
   const selectedAI =
     profiles.find((profile) => profile.id === selectedAIID) ?? profiles[0];
   const selectedEquipment =
@@ -2146,6 +2222,9 @@ function SettingsPage({
   useEffect(() => {
     StudioService.EquipmentConfigPath()
       .then(setEquipmentPath)
+      .catch(() => undefined);
+    StudioService.FileSinkPath()
+      .then(setFileSinkPath)
       .catch(() => undefined);
     StudioService.CompareEquipmentConfig()
       .then(setConfigComparison)
@@ -2172,6 +2251,16 @@ function SettingsPage({
             : active.id,
         );
       })
+      .catch(() => undefined);
+    StudioService.PermissionPolicy()
+      .then((value) =>
+        setPermissionPolicy({
+          mode: value.mode,
+          equipment: value.equipment ?? ["*"],
+          commands: value.commands ?? ["*"],
+          ttlMinutes: value.ttlMinutes,
+        }),
+      )
       .catch(() => undefined);
   }, []);
   useEffect(() => {
@@ -2372,10 +2461,10 @@ function SettingsPage({
       setEquipmentPath(result.path);
       setConfigStatus(
         result.added?.length
-          ? `Added ${result.added.join(", ")} · restart required`
+          ? `Added and hot applied ${result.added.join(", ")}`
           : "Runtime already contains every packaged demo",
       );
-      if (result.added?.length) setRestartRequired(true);
+      if (result.restartRequired) setRestartRequired(true);
     } catch (reason) {
       setConfigStatus(`Merge failed · ${String(reason)}`);
     }
@@ -2400,6 +2489,14 @@ function SettingsPage({
       );
     } catch (reason) {
       setRetentionStatus(`Retention failed · ${String(reason)}`);
+    }
+  };
+  const savePermissionPolicy = async () => {
+    try {
+      await StudioService.SavePermissionPolicy(permissionPolicy);
+      setPermissionStatus("Permission policy saved");
+    } catch (reason) {
+      setPermissionStatus(`Save failed · ${String(reason)}`);
     }
   };
 
@@ -2471,6 +2568,79 @@ function SettingsPage({
                 </p>
               </div>
             </div>
+            <label>
+              AI write policy
+              <select
+                value={permissionPolicy.mode}
+                onChange={(event) =>
+                  setPermissionPolicy((value) => ({
+                    ...value,
+                    mode: event.target.value,
+                  }))
+                }
+              >
+                <option value="ask">Allowlist + ask every time</option>
+                <option value="deny">Deny all AI write actions</option>
+              </select>
+            </label>
+            <label>
+              Equipment allowlist (glob, comma separated)
+              <input
+                value={permissionPolicy.equipment.join(", ")}
+                onChange={(event) =>
+                  setPermissionPolicy((value) => ({
+                    ...value,
+                    equipment: event.target.value
+                      .split(",")
+                      .map((item) => item.trim())
+                      .filter(Boolean),
+                  }))
+                }
+                placeholder="ETCHER-*, AOI-01"
+              />
+            </label>
+            <label>
+              Command allowlist (glob, comma separated)
+              <input
+                value={permissionPolicy.commands.join(", ")}
+                onChange={(event) =>
+                  setPermissionPolicy((value) => ({
+                    ...value,
+                    commands: event.target.value
+                      .split(",")
+                      .map((item) => item.trim())
+                      .filter(Boolean),
+                  }))
+                }
+                placeholder="send.*, request.review"
+              />
+            </label>
+            <label>
+              Approval expiry
+              <select
+                value={permissionPolicy.ttlMinutes}
+                onChange={(event) =>
+                  setPermissionPolicy((value) => ({
+                    ...value,
+                    ttlMinutes: Number(event.target.value),
+                  }))
+                }
+              >
+                {[1, 5, 10, 30, 60].map((value) => (
+                  <option key={value} value={value}>
+                    {value} minutes
+                  </option>
+                ))}
+              </select>
+            </label>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => void savePermissionPolicy()}
+            >
+              Save permission policy
+            </Button>
+            {permissionStatus && <p>{permissionStatus}</p>}
             <p>
               API Keys are AES-256-GCM encrypted in SQLite. The encryption key
               is derived with SHA-256 from a per-install random secret and is
@@ -2514,10 +2684,10 @@ function SettingsPage({
               <div className="config-restart-notice">
                 <RefreshCw className="size-4" />
                 <div>
-                  <b>Restart EapStudio to apply equipment changes</b>
+                  <b>Restart required by this configuration change</b>
                   <p>
-                    The current DeviceManager keeps its existing runtimes until
-                    the next application start.
+                    This notice is reserved for changes that cannot be hot
+                    applied.
                   </p>
                 </div>
               </div>
@@ -2525,6 +2695,10 @@ function SettingsPage({
             <p className="config-path">
               {configComparison?.runtimePath || equipmentPath}
             </p>
+            <label>
+              Canonical event File Sink
+              <input value={fileSinkPath} readOnly />
+            </label>
           </CardContent>
         </Card>
         <Card>
@@ -2950,15 +3124,178 @@ function SettingsPage({
                     "Runtime config path is resolved by the backend."}
                 </p>
                 <p>
-                  Changing equipment runtime definitions requires an app
-                  restart. Custom Adapter names must be registered by the
-                  backend.
+                  Equipment and Profile changes are hot applied by replacing
+                  only affected DeviceRuntime instances. Custom Adapter names
+                  must still be registered by the backend.
                 </p>
               </div>
             )}
           </CardContent>
         </Card>
       </div>
+    </div>
+  );
+}
+
+function ProfileWorkbench() {
+  type ProfileItem = NonNullable<
+    Awaited<ReturnType<typeof StudioService.ListProfiles>>
+  >[number];
+  const [profiles, setProfiles] = useState<ProfileItem[]>([]);
+  const [selectedPath, setSelectedPath] = useState("");
+  const [yaml, setYAML] = useState("");
+  const [eventName, setEventName] = useState("material.arrived");
+  const [eventData, setEventData] = useState(
+    '{\n  "materialId": "MAT-001",\n  "recipeId": "ETCH-A",\n  "portId": "LP01"\n}',
+  );
+  const [status, setStatus] = useState("");
+  const [preview, setPreview] = useState<unknown>(null);
+  const loadList = () =>
+    StudioService.ListProfiles().then((items) => {
+      const values = items ?? [];
+      setProfiles(values);
+      if (!selectedPath && values.length) setSelectedPath(values[0].path);
+    });
+  useEffect(() => void loadList(), []);
+  useEffect(() => {
+    if (!selectedPath) return;
+    StudioService.ReadProfile(selectedPath).then((value) => {
+      setYAML(value.yaml);
+      setStatus("");
+      setPreview(null);
+    });
+  }, [selectedPath]);
+  const validate = async () => {
+    const value = await StudioService.ValidateProfileYAML(selectedPath, yaml);
+    setStatus(
+      value.valid
+        ? `Valid · ${value.summary.vendor} ${value.summary.model}${value.warnings?.length ? ` · ${value.warnings.join(" · ")}` : ""}`
+        : `Invalid · ${value.error}`,
+    );
+  };
+  const save = async () => {
+    try {
+      const result = await StudioService.SaveProfile(selectedPath, yaml);
+      setStatus(
+        `Saved · hot reloaded ${result.reloadedDevices?.join(", ") || "no active devices"}`,
+      );
+      await loadList();
+    } catch (reason) {
+      setStatus(`Save failed · ${String(reason)}`);
+    }
+  };
+  const runPreview = async () => {
+    try {
+      const data = JSON.parse(eventData) as Record<string, unknown>;
+      setPreview(
+        await StudioService.PreviewProfileEvent(yaml, eventName, data),
+      );
+      setStatus("Round-trip preview succeeded");
+    } catch (reason) {
+      setStatus(`Preview failed · ${String(reason)}`);
+    }
+  };
+  return (
+    <div className="page-stack workbench-page">
+      <div className="section-heading !mt-0">
+        <div>
+          <h3>Profile / Adapter Workbench</h3>
+          <p>
+            Validate YAML, preview canonical ↔ SECS conversion, and hot reload
+            affected runtimes.
+          </p>
+        </div>
+        <div className="flex gap-2">
+          <Button size="sm" variant="outline" onClick={() => void validate()}>
+            Validate
+          </Button>
+          <Button size="sm" onClick={() => void save()}>
+            Save & hot reload
+          </Button>
+        </div>
+      </div>
+      <div className="workbench-grid">
+        <Card className="workbench-list">
+          <CardHeader>
+            <CardTitle>Profiles</CardTitle>
+            <CardDescription>
+              {profiles.length} runtime definitions
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            {profiles.map((item) => (
+              <button
+                key={item.path}
+                className={cn(
+                  "workbench-profile",
+                  selectedPath === item.path && "active",
+                )}
+                onClick={() => setSelectedPath(item.path)}
+              >
+                <b>{item.name || item.path}</b>
+                <span>
+                  {item.vendor} {item.model} · {item.adapter}
+                </span>
+                <Badge variant={item.valid ? "success" : "warning"}>
+                  {item.valid ? "valid" : "invalid"}
+                </Badge>
+              </button>
+            ))}
+          </CardContent>
+        </Card>
+        <Card className="workbench-editor">
+          <CardHeader>
+            <CardTitle>{selectedPath}</CardTitle>
+            <CardDescription>Runtime YAML source</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <textarea
+              value={yaml}
+              onChange={(event) => setYAML(event.target.value)}
+              spellCheck={false}
+            />
+          </CardContent>
+        </Card>
+        <Card className="workbench-preview">
+          <CardHeader>
+            <CardTitle>Round-trip preview</CardTitle>
+            <CardDescription>
+              Canonical event → Adapter.BuildEvent → Adapter.Parse
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="settings-form">
+            <label>
+              Event name
+              <input
+                value={eventName}
+                onChange={(event) => setEventName(event.target.value)}
+              />
+            </label>
+            <label>
+              Canonical data
+              <textarea
+                value={eventData}
+                onChange={(event) => setEventData(event.target.value)}
+                spellCheck={false}
+              />
+            </label>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => void runPreview()}
+            >
+              <FlaskConical className="size-3.5" />
+              Run preview
+            </Button>
+            {preview !== null && (
+              <pre className="workbench-result">
+                {JSON.stringify(preview, null, 2)}
+              </pre>
+            )}
+          </CardContent>
+        </Card>
+      </div>
+      {status && <div className="workbench-status">{status}</div>}
     </div>
   );
 }
@@ -2992,6 +3329,9 @@ function Copilot({
     text: string;
     attachments?: CopilotAttachment[];
     evidence?: string[];
+    tools?: NonNullable<
+      Awaited<ReturnType<typeof StudioService.AskCopilot>>["tools"]
+    >;
     permission?: PermissionRequest;
     permissionStatus?: "pending" | "allowed" | "denied" | "expired";
   };
@@ -3157,6 +3497,7 @@ function Copilot({
                 permission: value.done
                   ? (value.reply?.permission ?? undefined)
                   : message.permission,
+                tools: value.done ? (value.reply?.tools ?? []) : message.tools,
                 permissionStatus:
                   value.done && value.reply?.permission
                     ? "pending"
@@ -3461,6 +3802,16 @@ function Copilot({
                         </ToolContent>
                       </Tool>
                     ) : null}
+                    {message.tools?.map((tool, index) => (
+                      <Tool className="mt-2" key={`${tool.name}-${index}`}>
+                        <ToolHeader title={tool.name} />
+                        <ToolContent>
+                          <pre className="copilot-tool-result">
+                            {JSON.stringify(tool.result, null, 2)}
+                          </pre>
+                        </ToolContent>
+                      </Tool>
+                    ))}
                     {message.permission && (
                       <PermissionCard
                         permission={message.permission}
@@ -3643,6 +3994,19 @@ function PermissionCard({
           2,
         )}
       </pre>
+      {Object.keys(permission.parameterDiff ?? {}).length > 0 && (
+        <div className="permission-diff">
+          <b>Parameter changes</b>
+          {Object.entries(permission.parameterDiff ?? {}).map(
+            ([key, change]) => (
+              <span key={key}>
+                {key}: {JSON.stringify(change?.before ?? null)} →{" "}
+                {JSON.stringify(change?.after)}
+              </span>
+            ),
+          )}
+        </div>
+      )}
       <div className="permission-risk">{permission.risk}</div>
       {status === "pending" && (
         <div className="permission-actions">

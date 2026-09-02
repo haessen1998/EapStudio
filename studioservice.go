@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	pathpkg "path"
 	"path/filepath"
 	"reflect"
 	"sort"
@@ -18,6 +19,10 @@ import (
 	"eapstudio/internal/ai"
 	"eapstudio/internal/automation"
 	"eapstudio/internal/device"
+	driver "eapstudio/internal/driver/secs"
+	"eapstudio/internal/equipment"
+	"eapstudio/internal/event"
+	"eapstudio/internal/profile"
 	"eapstudio/internal/router"
 	"eapstudio/internal/sink"
 	sqlitestore "eapstudio/internal/store/sqlite"
@@ -38,6 +43,9 @@ type StudioService struct {
 	equipmentConfigPath  string
 	equipmentConfigMu    sync.Mutex
 	ruleSource           fs.FS
+	profileSource        fs.FS
+	runtimeConfigDir     string
+	fileSinkPath         string
 	routeConfigPath      string
 	automationConfigPath string
 	ruleReloadMu         sync.Mutex
@@ -63,6 +71,7 @@ type CopilotReply struct {
 	Evidence    []string            `json:"evidence"`
 	Suggestions []string            `json:"suggestions"`
 	Permission  *AIActionPermission `json:"permission,omitempty"`
+	Tools       []ai.ToolResult     `json:"tools,omitempty"`
 }
 
 type CopilotStreamEvent struct {
@@ -74,13 +83,56 @@ type CopilotStreamEvent struct {
 }
 
 type AIActionPermission struct {
-	ID          string         `json:"id"`
-	Tool        string         `json:"tool"`
-	EquipmentID string         `json:"equipmentId"`
-	Command     string         `json:"command"`
-	Summary     string         `json:"summary"`
-	Risk        string         `json:"risk"`
-	Parameters  map[string]any `json:"parameters"`
+	ID            string                     `json:"id"`
+	Tool          string                     `json:"tool"`
+	EquipmentID   string                     `json:"equipmentId"`
+	Command       string                     `json:"command"`
+	Summary       string                     `json:"summary"`
+	Risk          string                     `json:"risk"`
+	Parameters    map[string]any             `json:"parameters"`
+	ParameterDiff map[string]ParameterChange `json:"parameterDiff"`
+	ExpiresAt     time.Time                  `json:"expiresAt"`
+	SessionID     string                     `json:"-"`
+}
+
+type ParameterChange struct {
+	Before any `json:"before,omitempty"`
+	After  any `json:"after"`
+}
+
+type PermissionPolicy struct {
+	Mode       string   `json:"mode"`
+	Equipment  []string `json:"equipment"`
+	Commands   []string `json:"commands"`
+	TTLMinutes int      `json:"ttlMinutes"`
+}
+
+func defaultPermissionPolicy() PermissionPolicy {
+	return PermissionPolicy{Mode: "ask", Equipment: []string{"*"}, Commands: []string{"*"}, TTLMinutes: 5}
+}
+
+func (s *StudioService) PermissionPolicy() (PermissionPolicy, error) {
+	value := defaultPermissionPolicy()
+	_, err := s.store.LoadSetting(context.Background(), "permission_policy", &value)
+	return value, err
+}
+
+func (s *StudioService) SavePermissionPolicy(value PermissionPolicy) error {
+	if value.Mode != "ask" && value.Mode != "deny" {
+		return fmt.Errorf("permission mode must be ask or deny")
+	}
+	if value.TTLMinutes < 1 || value.TTLMinutes > 60 {
+		return fmt.Errorf("permission TTL must be between 1 and 60 minutes")
+	}
+	if len(value.Equipment) == 0 || len(value.Commands) == 0 {
+		return fmt.Errorf("equipment and command patterns are required")
+	}
+	for _, pattern := range append(append([]string{}, value.Equipment...), value.Commands...) {
+		if _, err := pathpkg.Match(pattern, ""); err != nil {
+			return fmt.Errorf("invalid permission pattern %q", pattern)
+		}
+	}
+	return s.store.SaveSetting(context.Background(), "permission_policy", value)
 }
 
 func NewStudioService(source fs.FS) (*StudioService, error) {
@@ -98,7 +150,33 @@ func NewStudioService(source fs.FS) (*StudioService, error) {
 			return nil, err
 		}
 	}
+	if err := ensureRuntimeFileSinkRoute(filepath.Join(configDir, "routes.yaml")); err != nil {
+		return nil, err
+	}
+	if err := materializeRuntimeTree(source, "profiles", configDir); err != nil {
+		return nil, err
+	}
 	return newStudioServiceWithConfig(source, databasePath, config, configPath, os.DirFS(configDir), "routes.yaml", "automations.yaml")
+}
+
+func ensureRuntimeFileSinkRoute(path string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	if strings.Contains(string(data), "canonical-file-audit") {
+		return nil
+	}
+	addition := "\n  - name: canonical-file-audit\n    match:\n      names: [\"*\"]\n      equipment: [\"*\"]\n    sinks: [file-events]\n"
+	file, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	if _, err = file.WriteString(addition); err != nil {
+		_ = file.Close()
+		return err
+	}
+	return file.Close()
 }
 
 func newStudioService(source fs.FS, databasePath string) (*StudioService, error) {
@@ -113,11 +191,19 @@ func newStudioServiceWithConfig(source fs.FS, databasePath string, config device
 	mockMQ := sink.NewMemory("mock-mq")
 	qualityMQ := sink.NewMemory("quality-mq")
 	thermalMQ := sink.NewMemory("thermal-mq")
+	configDir := filepath.Dir(configPath)
+	if configPath == "" {
+		configDir = filepath.Dir(databasePath)
+	}
+	fileOutput, err := sink.NewFile("file-events", filepath.Join(configDir, "events", "canonical-events.jsonl"))
+	if err != nil {
+		return nil, err
+	}
 	history, err := sqlitestore.Open(databasePath)
 	if err != nil {
 		return nil, err
 	}
-	routes, err := router.Load(ruleSource, routePath, mockMQ, qualityMQ, thermalMQ, history)
+	routes, err := router.Load(ruleSource, routePath, mockMQ, qualityMQ, thermalMQ, fileOutput, history)
 	if err != nil {
 		_ = history.Close()
 		return nil, err
@@ -127,12 +213,12 @@ func newStudioServiceWithConfig(source fs.FS, databasePath string, config device
 		_ = history.Close()
 		return nil, err
 	}
-	service := &StudioService{packagedSource: source, router: routes, config: config, automation: engine, store: history, updates: make(chan struct{}, 1), aiConfig: ai.Config{Provider: "local"}, equipmentConfigPath: configPath, ruleSource: ruleSource, routeConfigPath: routePath, automationConfigPath: automationPath, pending: map[string]AIActionPermission{}, copilotEvents: make(chan CopilotStreamEvent, 1024)}
+	service := &StudioService{packagedSource: source, router: routes, config: config, automation: engine, store: history, updates: make(chan struct{}, 1), aiConfig: ai.Config{Provider: "local"}, equipmentConfigPath: configPath, ruleSource: ruleSource, profileSource: ruleSource, runtimeConfigDir: configDir, fileSinkPath: fileOutput.Path(), routeConfigPath: routePath, automationConfigPath: automationPath, pending: map[string]AIActionPermission{}, copilotEvents: make(chan CopilotStreamEvent, 1024)}
 	if err := service.loadStoredAIConfig(); err != nil {
 		_ = history.Close()
 		return nil, err
 	}
-	manager, err := device.NewManager(source, config, routes, engine, history, service.notify)
+	manager, err := device.NewManager(ruleSource, config, routes, engine, history, service.notify)
 	if err != nil {
 		_ = history.Close()
 		return nil, err
@@ -140,6 +226,20 @@ func newStudioServiceWithConfig(source fs.FS, databasePath string, config device
 	service.manager = manager
 	return service, nil
 }
+
+func materializeRuntimeTree(source fs.FS, root, targetRoot string) error {
+	return fs.WalkDir(source, root, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		return materializeRuntimeFile(source, path, filepath.Join(targetRoot, filepath.FromSlash(path)))
+	})
+}
+
+func (s *StudioService) FileSinkPath() string { return s.fileSinkPath }
 
 func materializeRuntimeFile(source fs.FS, embeddedPath string, targetPath string) error {
 	if _, err := os.Stat(targetPath); err == nil {
@@ -190,6 +290,9 @@ func (s *StudioService) Snapshot() StudioSnapshot {
 func (s *StudioService) close() error {
 	if s.watchCancel != nil {
 		s.watchCancel()
+	}
+	if s.manager != nil {
+		s.manager.Close()
 	}
 	return s.store.Close()
 }
@@ -345,10 +448,167 @@ func (s *StudioService) EquipmentConfigPath() string { return s.equipmentConfigP
 func (s *StudioService) SaveEquipmentConfig(config device.Config) (EquipmentConfigSaveResult, error) {
 	s.equipmentConfigMu.Lock()
 	defer s.equipmentConfigMu.Unlock()
+	config = device.NormalizeConfig(config)
+	if err := device.ValidateConfig(config); err != nil {
+		return EquipmentConfigSaveResult{}, err
+	}
+	if err := s.manager.ApplyConfig(s.profileSource, config, nil); err != nil {
+		return EquipmentConfigSaveResult{}, err
+	}
 	if err := device.SaveConfig(s.equipmentConfigPath, config); err != nil {
 		return EquipmentConfigSaveResult{}, err
 	}
-	return EquipmentConfigSaveResult{Path: s.equipmentConfigPath, RestartRequired: true}, nil
+	s.config = config
+	return EquipmentConfigSaveResult{Path: s.equipmentConfigPath, RestartRequired: false}, nil
+}
+
+type ProfileSummary struct {
+	Path    string `json:"path"`
+	Name    string `json:"name"`
+	Vendor  string `json:"vendor"`
+	Model   string `json:"model"`
+	Version string `json:"version"`
+	Adapter string `json:"adapter"`
+	Valid   bool   `json:"valid"`
+	Error   string `json:"error,omitempty"`
+}
+
+type ProfileDocument struct {
+	Path string `json:"path"`
+	YAML string `json:"yaml"`
+}
+
+type ProfileValidation struct {
+	Valid    bool           `json:"valid"`
+	Error    string         `json:"error,omitempty"`
+	Summary  ProfileSummary `json:"summary"`
+	Warnings []string       `json:"warnings"`
+}
+
+type ProfilePreview struct {
+	Message driver.Message `json:"message"`
+	Events  []event.Event  `json:"events"`
+}
+
+type ProfileSaveResult struct {
+	Path            string   `json:"path"`
+	ReloadedDevices []string `json:"reloadedDevices"`
+}
+
+func (s *StudioService) ListProfiles() ([]ProfileSummary, error) {
+	var result []ProfileSummary
+	err := fs.WalkDir(s.profileSource, "profiles", func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() || !strings.HasSuffix(strings.ToLower(path), ".yaml") {
+			return nil
+		}
+		compiled, err := profile.Load(s.profileSource, path)
+		value := ProfileSummary{Path: filepath.ToSlash(path), Valid: err == nil}
+		if err != nil {
+			value.Error = err.Error()
+		} else {
+			value.Name, value.Vendor, value.Model, value.Version, value.Adapter = compiled.Metadata.Name, compiled.Metadata.Vendor, compiled.Metadata.Model, compiled.Metadata.Version, compiled.Metadata.Adapter
+		}
+		result = append(result, value)
+		return nil
+	})
+	sort.Slice(result, func(i, j int) bool { return result[i].Path < result[j].Path })
+	return result, err
+}
+
+func (s *StudioService) ReadProfile(path string) (ProfileDocument, error) {
+	clean, err := safeProfilePath(path)
+	if err != nil {
+		return ProfileDocument{}, err
+	}
+	data, err := fs.ReadFile(s.profileSource, clean)
+	return ProfileDocument{Path: clean, YAML: string(data)}, err
+}
+
+func (s *StudioService) ValidateProfileYAML(path, yamlText string) ProfileValidation {
+	compiled, err := profile.Decode([]byte(yamlText))
+	if err != nil {
+		return ProfileValidation{Valid: false, Error: err.Error(), Summary: ProfileSummary{Path: path}}
+	}
+	summary := ProfileSummary{Path: path, Name: compiled.Metadata.Name, Vendor: compiled.Metadata.Vendor, Model: compiled.Metadata.Model, Version: compiled.Metadata.Version, Adapter: compiled.Metadata.Adapter, Valid: true}
+	warnings := []string{}
+	if len(compiled.Spec.Events) == 0 {
+		warnings = append(warnings, "Profile defines no canonical events")
+	}
+	if len(compiled.Spec.Commands) == 0 {
+		warnings = append(warnings, "Profile defines no commands")
+	}
+	if _, adapterErr := equipment.NewAdapter(compiled.Metadata.Adapter); adapterErr != nil {
+		return ProfileValidation{Valid: false, Error: adapterErr.Error(), Summary: summary}
+	}
+	return ProfileValidation{Valid: true, Summary: summary, Warnings: warnings}
+}
+
+func (s *StudioService) PreviewProfileEvent(yamlText, eventName string, data map[string]any) (ProfilePreview, error) {
+	compiled, err := profile.Decode([]byte(yamlText))
+	if err != nil {
+		return ProfilePreview{}, err
+	}
+	adapter, err := equipment.NewAdapter(compiled.Metadata.Adapter)
+	if err != nil {
+		return ProfilePreview{}, err
+	}
+	message, err := adapter.BuildEvent(context.Background(), eventName, data, compiled)
+	if err != nil {
+		return ProfilePreview{}, err
+	}
+	message.ID, message.EquipmentID = "workbench-preview", "WORKBENCH"
+	events, err := adapter.Parse(context.Background(), message, compiled)
+	return ProfilePreview{Message: message, Events: events}, err
+}
+
+func (s *StudioService) SaveProfile(path, yamlText string) (ProfileSaveResult, error) {
+	clean, err := safeProfilePath(path)
+	if err != nil {
+		return ProfileSaveResult{}, err
+	}
+	validation := s.ValidateProfileYAML(clean, yamlText)
+	if !validation.Valid {
+		return ProfileSaveResult{}, fmt.Errorf("invalid profile: %s", validation.Error)
+	}
+	target := filepath.Join(s.runtimeConfigDir, filepath.FromSlash(clean))
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		return ProfileSaveResult{}, err
+	}
+	temporary := target + ".tmp"
+	if err := os.WriteFile(temporary, []byte(yamlText), 0o600); err != nil {
+		return ProfileSaveResult{}, err
+	}
+	if err := os.Rename(temporary, target); err != nil {
+		if writeErr := os.WriteFile(target, []byte(yamlText), 0o600); writeErr != nil {
+			return ProfileSaveResult{}, writeErr
+		}
+		_ = os.Remove(temporary)
+	}
+	config, err := s.runtimeEquipmentConfig()
+	if err != nil {
+		return ProfileSaveResult{}, err
+	}
+	if err := s.manager.ApplyConfig(s.profileSource, config, map[string]bool{clean: true}); err != nil {
+		return ProfileSaveResult{}, err
+	}
+	result := ProfileSaveResult{Path: target}
+	for _, definition := range config.Devices {
+		if filepath.ToSlash(definition.Profile) == clean {
+			result.ReloadedDevices = append(result.ReloadedDevices, definition.ID)
+		}
+	}
+	return result, nil
+}
+
+func safeProfilePath(value string) (string, error) {
+	clean := filepath.ToSlash(filepath.Clean(strings.TrimSpace(value)))
+	if !strings.HasPrefix(clean, "profiles/") || !strings.HasSuffix(strings.ToLower(clean), ".yaml") || strings.Contains(clean, "..") {
+		return "", fmt.Errorf("profile path must be a YAML file under profiles/")
+	}
+	return clean, nil
 }
 
 func (s *StudioService) SaveDeviceOrder(order []string) error {
@@ -461,9 +721,14 @@ func (s *StudioService) MergePackagedDemoDevices() (EquipmentMergeResult, error)
 		}
 	}
 	if len(result.Added) > 0 {
+		if err := s.manager.ApplyConfig(s.profileSource, runtimeConfig, nil); err != nil {
+			return EquipmentMergeResult{}, err
+		}
 		if err := device.SaveConfig(s.equipmentConfigPath, runtimeConfig); err != nil {
 			return EquipmentMergeResult{}, err
 		}
+		s.config = runtimeConfig
+		result.RestartRequired = false
 	}
 	return result, nil
 }
@@ -577,7 +842,10 @@ func (s *StudioService) AskCopilot(question string, equipmentID string, attachme
 		return CopilotReply{Answer: "当前没有已配置的设备。"}
 	}
 	if commandIntent(question) {
-		permission := s.newCommandPermission(*selected)
+		permission, err := s.newCommandPermission(*selected)
+		if err != nil {
+			return CopilotReply{Answer: "权限策略已阻止该命令：" + err.Error(), Evidence: []string{"permission policy"}}
+		}
 		return CopilotReply{
 			Answer:   fmt.Sprintf("我已准备 %s，但它会向 %s 发送设备命令，需要你在下方权限卡中明确授权。", permission.Command, permission.EquipmentID),
 			Evidence: []string{"目标设备 " + permission.EquipmentID, "Profile command " + permission.Command}, Permission: &permission,
@@ -705,6 +973,12 @@ func (s *StudioService) runCopilotStream(requestID, sessionID, question, scope s
 		} else {
 			reply = s.AskCopilot(question, scope, attachments)
 		}
+		if !commandIntent(question) {
+			reply.Tools = s.copilotReadTools(question, scope)
+		}
+		if reply.Permission != nil {
+			reply.Permission.SessionID = sessionID
+		}
 		for _, chunk := range textChunks(reply.Answer, 12) {
 			s.copilotEvents <- CopilotStreamEvent{RequestID: requestID, SessionID: sessionID, Delta: chunk}
 			time.Sleep(14 * time.Millisecond)
@@ -724,11 +998,8 @@ func (s *StudioService) runCopilotStream(requestID, sessionID, question, scope s
 		s.finishCopilotStream(requestID, sessionID, scope, CopilotReply{Answer: "AI provider 配置错误：" + err.Error()})
 		return
 	}
-	var runtimeContext any = selected
-	if scope == "ALL" {
-		runtimeContext = s.Snapshot()
-	}
-	contextJSON, _ := json.Marshal(runtimeContext)
+	tools := s.copilotReadTools(question, scope)
+	contextJSON, _ := json.Marshal(tools)
 	conversation, _ := s.store.CopilotHistory(context.Background(), sessionID, 24)
 	conversationText := copilotConversationContext(conversation, "user-"+requestID)
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Second)
@@ -736,7 +1007,7 @@ func (s *StudioService) runCopilotStream(requestID, sessionID, question, scope s
 	var answer strings.Builder
 	err = provider.Stream(ctx, ai.Request{
 		System: "You are EapStudio Copilot. Use the supplied runtime snapshot for studio and equipment facts. You may answer general non-device questions normally, but distinguish general knowledge from runtime evidence. Never claim a command was sent and never bypass UI permission approval.",
-		Prompt: conversationText + "Current user question:\n" + question + "\n\nRuntime snapshot:\n" + string(contextJSON), Attachments: attachments,
+		Prompt: conversationText + "Current user question:\n" + question + "\n\nTyped read-tool results:\n" + string(contextJSON), Attachments: attachments,
 	}, func(delta string) error {
 		answer.WriteString(delta)
 		s.copilotEvents <- CopilotStreamEvent{RequestID: requestID, SessionID: sessionID, Delta: delta}
@@ -749,10 +1020,42 @@ func (s *StudioService) runCopilotStream(requestID, sessionID, question, scope s
 				s.copilotEvents <- CopilotStreamEvent{RequestID: requestID, SessionID: sessionID, Delta: chunk}
 			}
 		}
-		s.finishCopilotStream(requestID, sessionID, scope, CopilotReply{Answer: answer.String() + message, Evidence: []string{config.Provider + " adapter"}})
+		s.finishCopilotStream(requestID, sessionID, scope, CopilotReply{Answer: answer.String() + message, Evidence: []string{config.Provider + " adapter"}, Tools: tools})
 		return
 	}
-	s.finishCopilotStream(requestID, sessionID, scope, CopilotReply{Answer: answer.String(), Evidence: []string{config.Provider + " adapter", "Runtime 快照"}})
+	s.finishCopilotStream(requestID, sessionID, scope, CopilotReply{Answer: answer.String(), Evidence: []string{config.Provider + " adapter", "typed runtime tools"}, Tools: tools})
+}
+
+func (s *StudioService) copilotReadTools(question, scope string) []ai.ToolResult {
+	snapshot := s.Snapshot()
+	var scoped any = snapshot
+	if scope != "ALL" {
+		scoped = s.selectedEquipment(scope)
+	}
+	results := []ai.ToolResult{{Name: "runtime.snapshot", Input: map[string]any{"scope": scope}, Result: scoped}}
+	lower := strings.ToLower(question)
+	query := sqlitestore.HistoryQuery{Page: 1, PageSize: 25, EquipmentID: scope, SinceHours: 24}
+	if strings.Contains(lower, "message") || strings.Contains(lower, "secs") || strings.Contains(question, "报文") || strings.Contains(question, "消息") {
+		if value, err := s.store.QueryTraces(context.Background(), query); err == nil {
+			results = append(results, ai.ToolResult{Name: "history.messages", Input: map[string]any{"scope": scope, "hours": 24}, Result: value})
+		}
+	}
+	if strings.Contains(lower, "event") || strings.Contains(lower, "correlation") || strings.Contains(question, "事件") || strings.Contains(question, "关联") {
+		if value, err := s.store.QueryEvents(context.Background(), query); err == nil {
+			results = append(results, ai.ToolResult{Name: "history.events", Input: map[string]any{"scope": scope, "hours": 24}, Result: value})
+		}
+	}
+	if strings.Contains(lower, "command") || strings.Contains(question, "命令") || strings.Contains(question, "执行结果") {
+		if value, err := s.store.QueryCommands(context.Background(), query); err == nil {
+			results = append(results, ai.ToolResult{Name: "history.commands", Input: map[string]any{"scope": scope, "hours": 24}, Result: value})
+		}
+	}
+	if strings.Contains(lower, "profile") || strings.Contains(question, "配置") {
+		if value, err := s.ListProfiles(); err == nil {
+			results = append(results, ai.ToolResult{Name: "profiles.list", Input: map[string]any{}, Result: value})
+		}
+	}
+	return results
 }
 
 func (s *StudioService) askAllCopilot(question string, attachments []ai.Attachment) CopilotReply {
@@ -848,7 +1151,11 @@ func toStoredPermission(value *AIActionPermission) *sqlitestore.CopilotPermissio
 	if value == nil {
 		return nil
 	}
-	return &sqlitestore.CopilotPermission{ID: value.ID, Tool: value.Tool, EquipmentID: value.EquipmentID, Command: value.Command, Summary: value.Summary, Risk: value.Risk, Parameters: value.Parameters}
+	diff := make(map[string]any, len(value.ParameterDiff))
+	for key, change := range value.ParameterDiff {
+		diff[key] = change
+	}
+	return &sqlitestore.CopilotPermission{ID: value.ID, Tool: value.Tool, EquipmentID: value.EquipmentID, Command: value.Command, Summary: value.Summary, Risk: value.Risk, Parameters: value.Parameters, ParameterDiff: diff, ExpiresAt: value.ExpiresAt}
 }
 
 func (s *StudioService) ListCopilotSessions(search string) ([]sqlitestore.CopilotSession, error) {
@@ -932,7 +1239,14 @@ func commandIntent(question string) bool {
 	return strings.Contains(question, "发送命令") || strings.Contains(question, "下发命令") || strings.Contains(question, "发送配方") || strings.Contains(question, "执行命令") || strings.Contains(lower, "send command") || strings.Contains(lower, "execute command")
 }
 
-func (s *StudioService) newCommandPermission(selected device.Snapshot) AIActionPermission {
+func (s *StudioService) newCommandPermission(selected device.Snapshot) (AIActionPermission, error) {
+	policy, err := s.PermissionPolicy()
+	if err != nil {
+		return AIActionPermission{}, err
+	}
+	if policy.Mode == "deny" || !matchesPolicy(policy.Equipment, selected.ID) || !matchesPolicy(policy.Commands, "send.recipe") {
+		return AIActionPermission{}, fmt.Errorf("send.recipe to %s is outside the configured allowlist", selected.ID)
+	}
 	parameters := map[string]any{"recipeId": "ETCH-A", "materialId": "AI-REQUEST"}
 	for index := len(selected.Events) - 1; index >= 0; index-- {
 		if selected.Events[index].Name != "material.arrived" {
@@ -946,11 +1260,34 @@ func (s *StudioService) newCommandPermission(selected device.Snapshot) AIActionP
 		break
 	}
 	id := fmt.Sprintf("permission-%06d", s.permissionSequence.Add(1))
-	permission := AIActionPermission{ID: id, Tool: "send.command", EquipmentID: selected.ID, Command: "send.recipe", Summary: "Send recipe parameters to equipment", Risk: "This writes to a live equipment session and may change equipment state.", Parameters: parameters}
+	diff := map[string]ParameterChange{}
+	var previous map[string]any
+	if history, historyErr := s.store.QueryCommands(context.Background(), sqlitestore.HistoryQuery{Page: 1, PageSize: 25, EquipmentID: selected.ID, Name: "send.recipe"}); historyErr == nil && len(history.Items) > 0 {
+		previous = history.Items[0].Parameters
+	}
+	for key, after := range parameters {
+		var before any
+		if previous != nil {
+			before = previous[key]
+		}
+		if !reflect.DeepEqual(before, after) {
+			diff[key] = ParameterChange{Before: before, After: after}
+		}
+	}
+	permission := AIActionPermission{ID: id, Tool: "send.command", EquipmentID: selected.ID, Command: "send.recipe", Summary: "Send recipe parameters to equipment", Risk: "This writes to a live equipment session and may change equipment state.", Parameters: parameters, ParameterDiff: diff, ExpiresAt: time.Now().Add(time.Duration(policy.TTLMinutes) * time.Minute)}
 	s.aiMu.Lock()
 	s.pending[id] = permission
 	s.aiMu.Unlock()
-	return permission
+	return permission, nil
+}
+
+func matchesPolicy(patterns []string, value string) bool {
+	for _, pattern := range patterns {
+		if ok, _ := pathpkg.Match(pattern, value); ok {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *StudioService) ResolveAIAction(permissionID string, allow bool) CopilotReply {
@@ -963,10 +1300,14 @@ func (s *StudioService) ResolveAIAction(permissionID string, allow bool) Copilot
 	if !ok {
 		return CopilotReply{Answer: "该权限请求不存在或已经处理。"}
 	}
+	if time.Now().After(permission.ExpiresAt) {
+		_ = s.store.UpdateCopilotPermission(context.Background(), permissionID, "expired")
+		return CopilotReply{Answer: "权限请求已过期，没有发送命令。", Evidence: []string{"permission expired"}}
+	}
 	if !allow {
 		_ = s.store.UpdateCopilotPermission(context.Background(), permissionID, "denied")
 		reply := CopilotReply{Answer: fmt.Sprintf("已拒绝 %s；没有向 %s 发送任何消息。", permission.Command, permission.EquipmentID), Evidence: []string{"permission denied"}}
-		s.recordCopilotResolution(permission.EquipmentID, reply)
+		s.recordCopilotResolution(permission.SessionID, permission.EquipmentID, reply)
 		return reply
 	}
 	_ = s.store.UpdateCopilotPermission(context.Background(), permissionID, "allowed")
@@ -974,18 +1315,18 @@ func (s *StudioService) ResolveAIAction(permissionID string, allow bool) Copilot
 	value, err := s.manager.SubmitCommand(permission.EquipmentID, permission.Command, permission.Parameters, correlationID, permission.ID)
 	if err != nil {
 		reply := CopilotReply{Answer: "命令执行失败：" + err.Error(), Evidence: []string{"permission allowed", "command rejected before send"}}
-		s.recordCopilotResolution(permission.EquipmentID, reply)
+		s.recordCopilotResolution(permission.SessionID, permission.EquipmentID, reply)
 		return reply
 	}
 	reply := CopilotReply{Answer: fmt.Sprintf("已授权并提交 %s，commandId=%s。执行结果会以 recipe.sent 或 recipe.failed Event 返回。", value.Name, value.ID), Evidence: []string{"permission allowed", "command queue " + permission.EquipmentID}}
-	s.recordCopilotResolution(permission.EquipmentID, reply)
+	s.recordCopilotResolution(permission.SessionID, permission.EquipmentID, reply)
 	return reply
 }
 
-func (s *StudioService) recordCopilotResolution(equipmentID string, reply CopilotReply) {
+func (s *StudioService) recordCopilotResolution(sessionID, equipmentID string, reply CopilotReply) {
 	id := fmt.Sprintf("assistant-resolution-%d", time.Now().UnixNano())
 	_ = s.store.RecordCopilotMessage(context.Background(), sqlitestore.CopilotMessage{
-		ID: id, SessionID: "default", EquipmentID: equipmentID, Role: "assistant", Text: reply.Answer,
+		ID: id, SessionID: sessionID, EquipmentID: equipmentID, Role: "assistant", Text: reply.Answer,
 		Evidence: reply.Evidence, CreatedAt: time.Now().UTC(),
 	})
 }

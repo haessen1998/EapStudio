@@ -66,6 +66,18 @@ func (d *GoSecsDriver) State() ConnectionState {
 	return d.state
 }
 
+func (d *GoSecsDriver) ProtocolDiagnostics() ProtocolDiagnostics {
+	metrics := d.connection.Metrics()
+	control := d.connection.ControlMetrics()
+	return ProtocolDiagnostics{
+		DataSent: metrics.DataMsgSendCount(), DataReceived: metrics.DataMsgRecvCount(), DataErrors: metrics.DataMsgErrCount(),
+		DecodeErrors: metrics.DecodeErrCount() + metrics.BodyDecodeErrCount(), ReplyMismatches: metrics.ReplyMismatchCount(),
+		Reconnects: metrics.Reconnects(), Inflight: metrics.DataMsgInflightCount(), LinktestSent: control.LinktestSendCount(),
+		LinktestReceived: control.LinktestRecvCount(), LinktestErrors: control.LinktestErrCount(), SeparateReceived: control.SeparateRecvCount(),
+		RejectSent: control.RejectSentCount(), RejectReceived: control.RejectRecvCount(),
+	}
+}
+
 func (d *GoSecsDriver) OnMessage(handler MessageHandler) {
 	d.mu.Lock()
 	d.message = handler

@@ -14,6 +14,13 @@ export type {
     EquipmentConfigComparison,
     EquipmentConfigSaveResult,
     EquipmentMergeResult,
+    ParameterChange,
+    PermissionPolicy,
+    ProfileDocument,
+    ProfilePreview,
+    ProfileSaveResult,
+    ProfileSummary,
+    ProfileValidation,
     RuleReloadResult,
     StudioSnapshot
 } from "./models.js";

@@ -10,13 +10,15 @@ import (
 )
 
 type CopilotPermission struct {
-	ID          string         `json:"id"`
-	Tool        string         `json:"tool"`
-	EquipmentID string         `json:"equipmentId"`
-	Command     string         `json:"command"`
-	Summary     string         `json:"summary"`
-	Risk        string         `json:"risk"`
-	Parameters  map[string]any `json:"parameters"`
+	ID            string         `json:"id"`
+	Tool          string         `json:"tool"`
+	EquipmentID   string         `json:"equipmentId"`
+	Command       string         `json:"command"`
+	Summary       string         `json:"summary"`
+	Risk          string         `json:"risk"`
+	Parameters    map[string]any `json:"parameters"`
+	ParameterDiff map[string]any `json:"parameterDiff,omitempty"`
+	ExpiresAt     time.Time      `json:"expiresAt,omitempty"`
 }
 
 type CopilotMessage struct {

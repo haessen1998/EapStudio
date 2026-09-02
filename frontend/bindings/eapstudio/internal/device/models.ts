@@ -34,6 +34,19 @@ export interface Definition {
     "connection": ConnectionConfig;
 }
 
+export interface RuntimeDiagnostics {
+    "connectAttempts": number;
+    "messagesIn": number;
+    "messagesOut": number;
+    "parseErrors": number;
+    "queueDrops": number;
+    "commandFailures": number;
+    "lastConnectedAt"?: string | null;
+    "lastMessageAt"?: string | null;
+    "lastError"?: string;
+    "protocol": secs$0.ProtocolDiagnostics;
+}
+
 export interface SimulatorScenario {
     "id": string;
     "displayName": string;
@@ -65,4 +78,5 @@ export interface Snapshot {
     "events": event$0.Event[] | null;
     "commands": command$0.Command[] | null;
     "scenarios": SimulatorScenario[] | null;
+    "diagnostics": RuntimeDiagnostics;
 }

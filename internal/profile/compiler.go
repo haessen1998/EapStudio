@@ -15,11 +15,15 @@ func Load(source fs.FS, path string) (*CompiledProfile, error) {
 		return nil, fmt.Errorf("read profile %q: %w", path, err)
 	}
 
+	return Decode(data)
+}
+
+func Decode(data []byte) (*CompiledProfile, error) {
 	var document EquipmentProfile
 	decoder := yaml.NewDecoder(strings.NewReader(string(data)))
 	decoder.KnownFields(true)
 	if err := decoder.Decode(&document); err != nil {
-		return nil, fmt.Errorf("decode profile %q: %w", path, err)
+		return nil, fmt.Errorf("decode profile: %w", err)
 	}
 	return Compile(document)
 }

@@ -3,5 +3,6 @@
 
 export type {
     Attachment,
-    Config
+    Config,
+    ToolResult
 } from "./models.js";

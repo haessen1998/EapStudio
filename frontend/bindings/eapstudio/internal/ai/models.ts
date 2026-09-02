@@ -13,3 +13,9 @@ export interface Config {
     "baseURL": string;
     "model": string;
 }
+
+export interface ToolResult {
+    "name": string;
+    "input": { [_ in string]?: any } | null;
+    "result": any;
+}
