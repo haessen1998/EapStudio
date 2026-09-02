@@ -27,6 +27,17 @@ export interface AIActionPermission {
     "parameters": { [_ in string]?: any } | null;
 }
 
+export interface AIProfileConfig {
+    "id": string;
+    "name": string;
+    "provider": string;
+    "baseURL": string;
+    "model": string;
+    "apiKey"?: string;
+    "hasApiKey": boolean;
+    "isDefault": boolean;
+}
+
 export interface CopilotReply {
     "answer": string;
     "evidence": string[] | null;

@@ -76,6 +76,10 @@ export function EquipmentConfigPath(): $CancellablePromise<string> {
     return $Call.ByID(1315334092);
 }
 
+export function ListAIProfiles(): $CancellablePromise<$models.AIProfileConfig[] | null> {
+    return $Call.ByID(874361723);
+}
+
 export function MergePackagedDemoDevices(): $CancellablePromise<$models.EquipmentMergeResult> {
     return $Call.ByID(956824401);
 }
@@ -98,6 +102,14 @@ export function ReloadRules(): $CancellablePromise<$models.RuleReloadResult> {
 
 export function ResolveAIAction(permissionID: string, allow: boolean): $CancellablePromise<$models.CopilotReply> {
     return $Call.ByID(1547149465, permissionID, allow);
+}
+
+export function SaveAIProfiles(profiles: $models.AIProfileConfig[] | null, defaultID: string): $CancellablePromise<void> {
+    return $Call.ByID(1093772770, profiles, defaultID);
+}
+
+export function SaveDeviceOrder(order: string[] | null): $CancellablePromise<void> {
+    return $Call.ByID(2024686028, order);
 }
 
 export function SaveEquipmentConfig(config: device$0.Config): $CancellablePromise<$models.EquipmentConfigSaveResult> {

@@ -53,6 +53,17 @@ func TestCompareAndMergePackagedEquipmentConfig(t *testing.T) {
 	if len(saved.Devices) != len(packaged.Devices) {
 		t.Fatalf("saved devices = %d, want %d", len(saved.Devices), len(packaged.Devices))
 	}
+	order := make([]string, 0, len(saved.Devices))
+	for index := len(saved.Devices) - 1; index >= 0; index-- {
+		order = append(order, saved.Devices[index].ID)
+	}
+	if err := service.SaveDeviceOrder(order); err != nil {
+		t.Fatal(err)
+	}
+	reordered, err := device.LoadConfig(os.DirFS(filepath.Dir(configPath)), filepath.Base(configPath))
+	if err != nil || reordered.Devices[0].ID != order[0] {
+		t.Fatalf("reordered = %#v, err = %v", reordered, err)
+	}
 }
 
 func snapshotDevice(t *testing.T, service *StudioService, id string) device.Snapshot {
@@ -78,6 +89,10 @@ func TestConfigureAIKeepsAPIKeyInBackendOnly(t *testing.T) {
 	}
 	if service.aiAPIKey != "session-secret" || service.AIConfig() != config {
 		t.Fatalf("AI config/key not retained correctly: config=%#v key=%q", service.AIConfig(), service.aiAPIKey)
+	}
+	profiles, err := service.ListAIProfiles()
+	if err != nil || len(profiles) != 3 || profiles[0].APIKey != "" {
+		t.Fatalf("public AI profiles = %#v, err = %v", profiles, err)
 	}
 }
 

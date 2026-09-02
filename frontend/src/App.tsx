@@ -102,6 +102,8 @@ type AIProfile = {
   baseURL: string;
   model: string;
   apiKey: string;
+  hasApiKey?: boolean;
+  isDefault?: boolean;
 };
 type EquipmentDraft = {
   key: string;
@@ -172,10 +174,8 @@ function loadPageSize(): PageSize {
 }
 
 function initialAIProfiles(): AIProfile[] {
-  const baseURL =
-    localStorage.getItem("eapstudio.ai.baseURL") ?? "https://api.openai.com/v1";
-  const model =
-    localStorage.getItem("eapstudio.ai.model")?.trim() || "gpt-5.6-luna";
+  const baseURL = "https://api.openai.com/v1";
+  const model = "gpt-5.6-luna";
   return [
     {
       id: "local",
@@ -202,41 +202,6 @@ function initialAIProfiles(): AIProfile[] {
       apiKey: "",
     },
   ];
-}
-
-function loadAIProfiles(): AIProfile[] {
-  try {
-    const value = JSON.parse(
-      localStorage.getItem("eapstudio.ai.profiles") ?? "[]",
-    );
-    if (!Array.isArray(value) || !value.length) return initialAIProfiles();
-    const profiles = value
-      .filter(
-        (item: Partial<AIProfile>) =>
-          item &&
-          typeof item.id === "string" &&
-          typeof item.name === "string" &&
-          ["local", "responses", "chat"].includes(item.provider ?? ""),
-      )
-      .map((item: Omit<AIProfile, "apiKey">) => ({
-        ...item,
-        model:
-          item.model?.trim() ||
-          (item.provider === "responses" ? "gpt-5.6-luna" : ""),
-        apiKey: "",
-      })) as AIProfile[];
-    return profiles.length ? profiles : initialAIProfiles();
-  } catch {
-    return initialAIProfiles();
-  }
-}
-
-function loadDefaultAIID(profiles: AIProfile[]) {
-  const legacy = localStorage.getItem("eapstudio.ai.provider") ?? "local";
-  const stored = localStorage.getItem("eapstudio.ai.defaultID") ?? legacy;
-  return profiles.some((profile) => profile.id === stored)
-    ? stored
-    : profiles[0].id;
 }
 
 function loadDeviceOrder() {
@@ -277,6 +242,7 @@ function App() {
   const [pageSize, setPageSize] = useState<PageSize>(loadPageSize);
   const [deviceOrder, setDeviceOrder] = useState<string[]>(loadDeviceOrder);
   const [draggedDeviceID, setDraggedDeviceID] = useState("");
+  const deviceOrderSaveTimer = useRef<number | undefined>(undefined);
 
   const rawDevices = snapshot.devices ?? [];
   const devices = useMemo(() => {
@@ -353,18 +319,6 @@ function App() {
   useEffect(() => {
     document.documentElement.dataset.theme =
       localStorage.getItem("eapstudio.theme") ?? "dark";
-    const profiles = loadAIProfiles();
-    const active =
-      profiles.find((profile) => profile.id === loadDefaultAIID(profiles)) ??
-      profiles[0];
-    StudioService.ConfigureAI(
-      {
-        provider: active.provider,
-        baseURL: active.baseURL,
-        model: active.model,
-      },
-      "",
-    ).catch(() => undefined);
     const retentionDays = Number(
       localStorage.getItem("eapstudio.historyRetentionDays"),
     );
@@ -387,6 +341,13 @@ function App() {
   useEffect(() => {
     localStorage.setItem("eapstudio.deviceOrder", JSON.stringify(deviceOrder));
   }, [deviceOrder]);
+  useEffect(
+    () => () => {
+      if (deviceOrderSaveTimer.current)
+        window.clearTimeout(deviceOrderSaveTimer.current);
+    },
+    [],
+  );
   useEffect(() => {
     localStorage.setItem("eapstudio.pageSize", String(pageSize));
   }, [pageSize]);
@@ -446,16 +407,25 @@ function App() {
     const sourceID =
       event.dataTransfer.getData("text/plain") || draggedDeviceID;
     if (!sourceID || sourceID === targetID) return;
-    setDeviceOrder((current) => {
-      const next = [...current];
-      const sourceIndex = next.indexOf(sourceID);
-      const targetIndex = next.indexOf(targetID);
-      if (sourceIndex < 0 || targetIndex < 0) return current;
-      next.splice(sourceIndex, 1);
-      next.splice(targetIndex, 0, sourceID);
-      return next;
-    });
+    const next = [...deviceOrder];
+    const sourceIndex = next.indexOf(sourceID);
+    const targetIndex = next.indexOf(targetID);
+    if (sourceIndex < 0 || targetIndex < 0) return;
+    next.splice(sourceIndex, 1);
+    next.splice(targetIndex, 0, sourceID);
+    persistDeviceOrder(next);
     setDraggedDeviceID("");
+  };
+
+  const persistDeviceOrder = (order: string[]) => {
+    setDeviceOrder(order);
+    if (deviceOrderSaveTimer.current)
+      window.clearTimeout(deviceOrderSaveTimer.current);
+    deviceOrderSaveTimer.current = window.setTimeout(() => {
+      StudioService.SaveDeviceOrder(order).catch((reason) =>
+        setError(`Save device order failed: ${String(reason)}`),
+      );
+    }, 150);
   };
 
   return (
@@ -718,7 +688,7 @@ function App() {
               storage={snapshot.storage}
               pageSize={pageSize}
               onPageSizeChange={setPageSize}
-              onDeviceOrderChange={(order) => setDeviceOrder(order)}
+              onDeviceOrderChange={persistDeviceOrder}
             />
           )}
         </section>
@@ -2147,13 +2117,9 @@ function SettingsPage({
   const [theme, setTheme] = useState(
     () => localStorage.getItem("eapstudio.theme") ?? "dark",
   );
-  const [profiles, setProfiles] = useState<AIProfile[]>(loadAIProfiles);
-  const [defaultAIID, setDefaultAIID] = useState(() =>
-    loadDefaultAIID(loadAIProfiles()),
-  );
-  const [selectedAIID, setSelectedAIID] = useState(() =>
-    loadDefaultAIID(loadAIProfiles()),
-  );
+  const [profiles, setProfiles] = useState<AIProfile[]>(initialAIProfiles);
+  const [defaultAIID, setDefaultAIID] = useState("local");
+  const [selectedAIID, setSelectedAIID] = useState("local");
   const [saved, setSaved] = useState(false);
   const [equipment, setEquipment] = useState<EquipmentDraft[]>(() =>
     devices.map(deviceToDraft),
@@ -2191,6 +2157,29 @@ function SettingsPage({
       .catch(() => undefined);
     StudioService.CompareEquipmentConfig()
       .then(setConfigComparison)
+      .catch(() => undefined);
+    StudioService.ListAIProfiles()
+      .then((stored) => {
+        if (!stored?.length) return;
+        const loaded = stored.map((profile) => ({
+          id: profile.id,
+          name: profile.name,
+          provider: profile.provider as AIProfile["provider"],
+          baseURL: profile.baseURL,
+          model: profile.model,
+          apiKey: "",
+          hasApiKey: profile.hasApiKey,
+          isDefault: profile.isDefault,
+        }));
+        const active = loaded.find((profile) => profile.isDefault) ?? loaded[0];
+        setProfiles(loaded);
+        setDefaultAIID(active.id);
+        setSelectedAIID((current) =>
+          loaded.some((profile) => profile.id === current)
+            ? current
+            : active.id,
+        );
+      })
       .catch(() => undefined);
   }, []);
   useEffect(() => {
@@ -2260,24 +2249,31 @@ function SettingsPage({
   const saveAI = async () => {
     const active =
       profiles.find((profile) => profile.id === defaultAIID) ?? profiles[0];
-    const publicProfiles = profiles.map(
-      ({ apiKey: _secret, ...profile }) => profile,
+    await StudioService.SaveAIProfiles(
+      profiles.map((profile) => ({
+        id: profile.id,
+        name: profile.name,
+        provider: profile.provider,
+        baseURL: profile.baseURL,
+        model: profile.model,
+        apiKey: profile.apiKey,
+        hasApiKey: profile.hasApiKey ?? false,
+        isDefault: profile.id === active.id,
+      })),
+      active.id,
     );
-    localStorage.setItem(
-      "eapstudio.ai.profiles",
-      JSON.stringify(publicProfiles),
-    );
-    localStorage.setItem("eapstudio.ai.defaultID", active.id);
-    localStorage.setItem("eapstudio.ai.provider", active.provider);
-    localStorage.setItem("eapstudio.ai.model", active.model);
-    localStorage.setItem("eapstudio.ai.baseURL", active.baseURL);
-    await StudioService.ConfigureAI(
-      {
-        provider: active.provider,
-        model: active.model,
-        baseURL: active.baseURL,
-      },
-      active.apiKey,
+    const stored = await StudioService.ListAIProfiles();
+    setProfiles(
+      (stored ?? []).map((profile) => ({
+        id: profile.id,
+        name: profile.name,
+        provider: profile.provider as AIProfile["provider"],
+        baseURL: profile.baseURL,
+        model: profile.model,
+        apiKey: "",
+        hasApiKey: profile.hasApiKey,
+        isDefault: profile.isDefault,
+      })),
     );
     window.dispatchEvent(new Event("eapstudio:ai-config-changed"));
     setSaved(true);
@@ -2484,10 +2480,10 @@ function SettingsPage({
               </div>
             </div>
             <p>
-              API Keys are sent to the Go backend for this process only and are
-              cleared when EapStudio exits or restarts. They are never written
-              to localStorage. <code>EAPSTUDIO_AI_API_KEY</code> remains the
-              persistent environment fallback.
+              API Keys are AES-256-GCM encrypted in SQLite. The encryption key
+              is derived with SHA-256 from a per-install random secret and is
+              never written to localStorage. <code>EAPSTUDIO_AI_API_KEY</code>{" "}
+              remains an environment fallback.
             </p>
           </CardContent>
         </Card>
@@ -2692,8 +2688,18 @@ function SettingsPage({
                         onChange={(event) =>
                           updateAI("apiKey", event.target.value)
                         }
-                        placeholder="Session only; env fallback when empty"
+                        placeholder={
+                          selectedAI.hasApiKey
+                            ? "Encrypted key stored"
+                            : "Enter API key"
+                        }
+                        aria-describedby="api-key-storage-note"
                       />
+                      <small id="api-key-storage-note">
+                        {selectedAI.hasApiKey
+                          ? "An encrypted key is stored. Leave empty to keep it, or enter a replacement."
+                          : "Stored encrypted in SQLite after saving."}
+                      </small>
                     </label>
                   </>
                 )}

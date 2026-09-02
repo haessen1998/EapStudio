@@ -189,6 +189,11 @@ CREATE TABLE IF NOT EXISTS copilot_messages (
   created_at DATETIME NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_copilot_equipment_time ON copilot_messages(equipment_id,created_at DESC);
+CREATE TABLE IF NOT EXISTS ai_profiles (
+  id TEXT PRIMARY KEY, name TEXT NOT NULL, provider TEXT NOT NULL,
+  base_url TEXT, model TEXT, api_key_cipher BLOB, api_key_nonce BLOB,
+  is_default INTEGER NOT NULL DEFAULT 0, updated_at DATETIME NOT NULL
+);
 `)
 	return err
 }

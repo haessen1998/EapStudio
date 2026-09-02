@@ -8,6 +8,7 @@ export {
 
 export type {
     AIActionPermission,
+    AIProfileConfig,
     CopilotReply,
     CopilotStreamEvent,
     EquipmentConfigComparison,

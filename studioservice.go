@@ -35,6 +35,7 @@ type StudioService struct {
 	aiConfig             ai.Config
 	aiAPIKey             string
 	equipmentConfigPath  string
+	equipmentConfigMu    sync.Mutex
 	ruleSource           fs.FS
 	routeConfigPath      string
 	automationConfigPath string
@@ -125,6 +126,10 @@ func newStudioServiceWithConfig(source fs.FS, databasePath string, config device
 		return nil, err
 	}
 	service := &StudioService{packagedSource: source, router: routes, config: config, automation: engine, store: history, updates: make(chan struct{}, 1), aiConfig: ai.Config{Provider: "local"}, equipmentConfigPath: configPath, ruleSource: ruleSource, routeConfigPath: routePath, automationConfigPath: automationPath, pending: map[string]AIActionPermission{}, copilotEvents: make(chan CopilotStreamEvent, 1024)}
+	if err := service.loadStoredAIConfig(); err != nil {
+		_ = history.Close()
+		return nil, err
+	}
 	manager, err := device.NewManager(source, config, routes, engine, history, service.notify)
 	if err != nil {
 		_ = history.Close()
@@ -216,11 +221,76 @@ func (s *StudioService) ConfigureAI(config ai.Config, apiKey string) error {
 	return nil
 }
 
+type AIProfileConfig struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Provider  string `json:"provider"`
+	BaseURL   string `json:"baseURL"`
+	Model     string `json:"model"`
+	APIKey    string `json:"apiKey,omitempty"`
+	HasAPIKey bool   `json:"hasApiKey"`
+	IsDefault bool   `json:"isDefault"`
+}
+
+func (s *StudioService) ListAIProfiles() ([]AIProfileConfig, error) {
+	stored, err := s.store.AIProfiles(context.Background())
+	if err != nil {
+		return nil, err
+	}
+	result := make([]AIProfileConfig, 0, len(stored))
+	for _, value := range stored {
+		result = append(result, AIProfileConfig{ID: value.ID, Name: value.Name, Provider: value.Provider, BaseURL: value.BaseURL, Model: value.Model, HasAPIKey: value.HasAPIKey, IsDefault: value.IsDefault})
+	}
+	return result, nil
+}
+
+func (s *StudioService) SaveAIProfiles(profiles []AIProfileConfig, defaultID string) error {
+	stored := make([]sqlitestore.AIProfile, 0, len(profiles))
+	for _, value := range profiles {
+		if value.Provider != "local" && value.Provider != "responses" && value.Provider != "chat" {
+			return fmt.Errorf("unsupported AI provider %q", value.Provider)
+		}
+		stored = append(stored, sqlitestore.AIProfile{ID: value.ID, Name: value.Name, Provider: value.Provider, BaseURL: value.BaseURL, Model: value.Model, APIKey: strings.TrimSpace(value.APIKey), IsDefault: value.ID == defaultID})
+	}
+	if err := s.store.SaveAIProfiles(context.Background(), stored, defaultID); err != nil {
+		return err
+	}
+	return s.loadStoredAIConfig()
+}
+
+func (s *StudioService) loadStoredAIConfig() error {
+	profiles, err := s.store.AIProfiles(context.Background())
+	if err != nil {
+		return err
+	}
+	if len(profiles) == 0 {
+		profiles = []sqlitestore.AIProfile{
+			{ID: "local", Name: "Local grounded", Provider: "local", IsDefault: true},
+			{ID: "responses", Name: "OpenAI Responses", Provider: "responses", BaseURL: "https://api.openai.com/v1", Model: "gpt-5.6-luna"},
+			{ID: "chat", Name: "Chat compatible", Provider: "chat", BaseURL: "https://api.openai.com/v1", Model: "gpt-5.6-luna"},
+		}
+		if err := s.store.SaveAIProfiles(context.Background(), profiles, "local"); err != nil {
+			return err
+		}
+	}
+	for _, value := range profiles {
+		if value.IsDefault {
+			return s.ConfigureAI(ai.Config{Provider: value.Provider, BaseURL: value.BaseURL, Model: value.Model}, value.APIKey)
+		}
+	}
+	return nil
+}
+
 func (s *StudioService) TestAIConfiguration(config ai.Config, apiKey string) (string, error) {
 	if config.Provider == "local" {
 		return "Local grounded provider is ready.", nil
 	}
 	apiKey = strings.TrimSpace(apiKey)
+	if apiKey == "" && config == s.AIConfig() {
+		s.aiMu.RLock()
+		apiKey = s.aiAPIKey
+		s.aiMu.RUnlock()
+	}
 	if apiKey == "" {
 		apiKey = os.Getenv("EAPSTUDIO_AI_API_KEY")
 	}
@@ -245,10 +315,40 @@ type EquipmentConfigSaveResult struct {
 func (s *StudioService) EquipmentConfigPath() string { return s.equipmentConfigPath }
 
 func (s *StudioService) SaveEquipmentConfig(config device.Config) (EquipmentConfigSaveResult, error) {
+	s.equipmentConfigMu.Lock()
+	defer s.equipmentConfigMu.Unlock()
 	if err := device.SaveConfig(s.equipmentConfigPath, config); err != nil {
 		return EquipmentConfigSaveResult{}, err
 	}
 	return EquipmentConfigSaveResult{Path: s.equipmentConfigPath, RestartRequired: true}, nil
+}
+
+func (s *StudioService) SaveDeviceOrder(order []string) error {
+	s.equipmentConfigMu.Lock()
+	defer s.equipmentConfigMu.Unlock()
+	config, err := s.runtimeEquipmentConfig()
+	if err != nil {
+		return err
+	}
+	byID := make(map[string]device.Definition, len(config.Devices))
+	for _, definition := range config.Devices {
+		byID[definition.ID] = definition
+	}
+	reordered := make([]device.Definition, 0, len(config.Devices))
+	seen := make(map[string]bool, len(order))
+	for _, id := range order {
+		if definition, exists := byID[id]; exists && !seen[id] {
+			reordered = append(reordered, definition)
+			seen[id] = true
+		}
+	}
+	for _, definition := range config.Devices {
+		if !seen[definition.ID] {
+			reordered = append(reordered, definition)
+		}
+	}
+	config.Devices = reordered
+	return device.SaveConfig(s.equipmentConfigPath, config)
 }
 
 type EquipmentConfigComparison struct {
@@ -267,6 +367,8 @@ type EquipmentMergeResult struct {
 }
 
 func (s *StudioService) CompareEquipmentConfig() (EquipmentConfigComparison, error) {
+	s.equipmentConfigMu.Lock()
+	defer s.equipmentConfigMu.Unlock()
 	packaged, err := device.LoadConfig(s.packagedSource, "configs/devices.yaml")
 	if err != nil {
 		return EquipmentConfigComparison{}, err
@@ -303,6 +405,8 @@ func (s *StudioService) CompareEquipmentConfig() (EquipmentConfigComparison, err
 }
 
 func (s *StudioService) MergePackagedDemoDevices() (EquipmentMergeResult, error) {
+	s.equipmentConfigMu.Lock()
+	defer s.equipmentConfigMu.Unlock()
 	packaged, err := device.LoadConfig(s.packagedSource, "configs/devices.yaml")
 	if err != nil {
 		return EquipmentMergeResult{}, err

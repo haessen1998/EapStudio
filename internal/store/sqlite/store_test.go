@@ -89,6 +89,50 @@ func TestCopilotHistoryPersistsMessagesAndPermissionState(t *testing.T) {
 	}
 }
 
+func TestAIProfilesEncryptAndRestoreAPIKey(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "ai-profiles.db")
+	store, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	secret := "sk-test-plain-text"
+	profiles := []AIProfile{
+		{ID: "local", Name: "Local", Provider: "local"},
+		{ID: "responses", Name: "Responses", Provider: "responses", BaseURL: "https://example.invalid/v1", Model: "test", APIKey: secret},
+	}
+	if err := store.SaveAIProfiles(ctx, profiles, "responses"); err != nil {
+		t.Fatal(err)
+	}
+	var encrypted []byte
+	if err := store.db.QueryRow(`SELECT api_key_cipher FROM ai_profiles WHERE id='responses'`).Scan(&encrypted); err != nil {
+		t.Fatal(err)
+	}
+	if len(encrypted) == 0 || string(encrypted) == secret {
+		t.Fatalf("API key was not encrypted: %q", encrypted)
+	}
+	loaded, err := store.AIProfiles(ctx)
+	if err != nil || len(loaded) != 2 || loaded[0].ID != "responses" || loaded[0].APIKey != secret || !loaded[0].HasAPIKey {
+		t.Fatalf("loaded = %#v, err = %v", loaded, err)
+	}
+	profiles[1].APIKey = ""
+	if err := store.SaveAIProfiles(ctx, profiles, "responses"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err = Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	loaded, err = store.AIProfiles(ctx)
+	if err != nil || loaded[0].APIKey != secret {
+		t.Fatalf("reopened profiles = %#v, err = %v", loaded, err)
+	}
+}
+
 func TestApplyRetentionPrunesHistoryButPreservesActiveAlarms(t *testing.T) {
 	store, err := Open(filepath.Join(t.TempDir(), "retention.db"))
 	if err != nil {
