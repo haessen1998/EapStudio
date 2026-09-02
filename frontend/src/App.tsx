@@ -5,6 +5,7 @@ import {
   PointerEvent as ReactPointerEvent,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from "react";
 import {
@@ -47,7 +48,11 @@ import {
   X,
 } from "lucide-react";
 import { Events } from "@wailsio/runtime";
-import { StudioService, type StudioSnapshot } from "../bindings/eapstudio";
+import {
+  StudioService,
+  type CopilotStreamEvent,
+  type StudioSnapshot,
+} from "../bindings/eapstudio";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -2400,7 +2405,8 @@ function SettingsPage({
         result.traceDeleted +
         result.eventDeleted +
         result.commandDeleted +
-        result.alarmDeleted;
+        result.alarmDeleted +
+        result.copilotDeleted;
       setRetentionStatus(
         `Saved · removed ${deleted.toLocaleString()} records · ${formatBytes(result.databaseBytes)}`,
       );
@@ -2976,14 +2982,16 @@ function Copilot({
     attachments?: CopilotAttachment[];
     evidence?: string[];
     permission?: PermissionRequest;
-    permissionStatus?: "pending" | "allowed" | "denied";
+    permissionStatus?: "pending" | "allowed" | "denied" | "expired";
   };
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [prompt, setPrompt] = useState("");
   const [attachments, setAttachments] = useState<CopilotAttachment[]>([]);
   const [attachmentError, setAttachmentError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [historyLoading, setHistoryLoading] = useState(false);
   const [provider, setProvider] = useState("local");
+  const activeEquipmentID = useRef("");
   useEffect(() => {
     const refreshProvider = () => {
       StudioService.AIConfig().then((config) => setProvider(config.provider));
@@ -2995,7 +3003,75 @@ function Copilot({
         "eapstudio:ai-config-changed",
         refreshProvider,
       );
-  }, [loading]);
+  }, []);
+  useEffect(() => {
+    const equipmentID = device?.id ?? "";
+    activeEquipmentID.current = equipmentID;
+    setLoading(false);
+    if (!equipmentID) {
+      setMessages([]);
+      return;
+    }
+    let active = true;
+    setHistoryLoading(true);
+    StudioService.CopilotHistory(equipmentID)
+      .then((history) => {
+        if (!active || activeEquipmentID.current !== equipmentID) return;
+        setMessages(
+          (history ?? []).map((message) => ({
+            id: message.id,
+            from: message.role === "user" ? "user" : "assistant",
+            text: message.text,
+            attachments: (message.attachments ?? []) as CopilotAttachment[],
+            evidence: message.evidence ?? [],
+            permission: message.permission
+              ? (message.permission as PermissionRequest)
+              : undefined,
+            permissionStatus: message.permission
+              ? message.permissionStatus === "allowed" ||
+                message.permissionStatus === "denied"
+                ? message.permissionStatus
+                : "expired"
+              : undefined,
+          })),
+        );
+      })
+      .catch((reason) => setAttachmentError(`History: ${String(reason)}`))
+      .finally(() => active && setHistoryLoading(false));
+    return () => {
+      active = false;
+    };
+  }, [device?.id]);
+  useEffect(() => {
+    const cancel = Events.On("studio:copilot-stream", (event) => {
+      const value = event.data as CopilotStreamEvent;
+      const messageID = `assistant-${value.requestId}`;
+      setMessages((current) =>
+        current.map((message) =>
+          message.id === messageID
+            ? {
+                ...message,
+                text: value.done
+                  ? (value.reply?.answer ?? message.text)
+                  : message.text + (value.delta ?? ""),
+                evidence: value.done
+                  ? (value.reply?.evidence ?? [])
+                  : message.evidence,
+                permission: value.done
+                  ? (value.reply?.permission ?? undefined)
+                  : message.permission,
+                permissionStatus:
+                  value.done && value.reply?.permission
+                    ? "pending"
+                    : message.permissionStatus,
+              }
+            : message,
+        ),
+      );
+      if (value.done) setLoading(false);
+    });
+    return () => cancel();
+  }, []);
   const selectFiles = async (files: FileList | null) => {
     if (!files?.length) return;
     setAttachmentError("");
@@ -3025,44 +3101,41 @@ function Copilot({
     setPrompt("");
     setAttachments([]);
     setAttachmentError("");
+    const requestID = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     setMessages((value) => [
       ...value,
       {
-        id: `user-${Date.now()}`,
+        id: `user-${requestID}`,
         from: "user",
         text: question,
         attachments: outgoing,
       },
+      {
+        id: `assistant-${requestID}`,
+        from: "assistant",
+        text: "",
+      },
     ]);
     setLoading(true);
     try {
-      const reply = await StudioService.AskCopilot(
+      await StudioService.AskCopilotStream(
+        requestID,
         question,
         device.id,
         outgoing,
       );
-      setMessages((value) => [
-        ...value,
-        {
-          id: `assistant-${Date.now()}`,
-          from: "assistant",
-          text: reply.answer,
-          evidence: reply.evidence ?? [],
-          permission: reply.permission ?? undefined,
-          permissionStatus: reply.permission ? "pending" : undefined,
-        },
-      ]);
     } catch (reason) {
-      setMessages((value) => [
-        ...value,
-        {
-          id: `assistant-${Date.now()}`,
-          from: "assistant",
-          text: `AI 调用失败：${String(reason)}`,
-          evidence: [provider + " adapter"],
-        },
-      ]);
-    } finally {
+      setMessages((value) =>
+        value.map((message) =>
+          message.id === `assistant-${requestID}`
+            ? {
+                ...message,
+                text: `AI 调用失败：${String(reason)}`,
+                evidence: [provider + " adapter"],
+              }
+            : message,
+        ),
+      );
       setLoading(false);
     }
   };
@@ -3089,6 +3162,12 @@ function Copilot({
       },
     ]);
   };
+  const clearHistory = async () => {
+    if (!device || !window.confirm(`Clear Copilot history for ${device.id}?`))
+      return;
+    await StudioService.ClearCopilotHistory(device.id);
+    setMessages([]);
+  };
   return (
     <aside
       aria-hidden={collapsed}
@@ -3105,6 +3184,17 @@ function Copilot({
         <Badge variant="success" className="copilot-label ml-auto">
           {provider}
         </Badge>
+        <Button
+          size="icon"
+          variant="outline"
+          className="copilot-clear"
+          disabled={!messages.length || loading}
+          onClick={clearHistory}
+          title="Clear conversation history"
+          aria-label="Clear conversation history"
+        >
+          <Trash2 className="size-3.5" />
+        </Button>
       </div>
       <div className="copilot-body">
         <Conversation>
@@ -3113,7 +3203,11 @@ function Copilot({
               <ConversationEmptyState
                 icon={<Sparkles className="size-7 text-primary" />}
                 title="Ask about this equipment"
-                description="Inspect state, explain messages, trace events, or attach equipment documents and images."
+                description={
+                  historyLoading
+                    ? "Loading conversation history…"
+                    : "Inspect state, explain messages, trace events, or attach equipment documents and images."
+                }
               />
             ) : (
               messages.map((message) => (
@@ -3123,7 +3217,8 @@ function Copilot({
                       <div className="message-attachments">
                         {message.attachments.map((item) => (
                           <div key={item.name}>
-                            {item.mediaType.startsWith("image/") ? (
+                            {item.mediaType.startsWith("image/") &&
+                            item.dataURL ? (
                               <img src={item.dataURL} alt={item.name} />
                             ) : (
                               <FileText className="size-4" />
@@ -3133,7 +3228,7 @@ function Copilot({
                         ))}
                       </div>
                     ) : null}
-                    <MessageResponse>{message.text}</MessageResponse>
+                    <MessageResponse>{message.text || "…"}</MessageResponse>
                     {message.evidence?.length ? (
                       <Tool className="mt-3">
                         <ToolHeader title="Runtime context" />
@@ -3242,7 +3337,7 @@ function PermissionCard({
   onDeny,
 }: {
   permission: PermissionRequest;
-  status: "pending" | "allowed" | "denied";
+  status: "pending" | "allowed" | "denied" | "expired";
   onAllow: () => void;
   onDeny: () => void;
 }) {
@@ -3258,7 +3353,7 @@ function PermissionCard({
           variant={
             status === "allowed"
               ? "success"
-              : status === "denied"
+              : status === "denied" || status === "expired"
                 ? "outline"
                 : "warning"
           }

@@ -3,6 +3,9 @@
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
+import * as ai$0 from "../../ai/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
 import * as command$0 from "../../command/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
@@ -29,6 +32,29 @@ export interface CommandPage {
     "page": number;
 }
 
+export interface CopilotMessage {
+    "id": string;
+    "sessionId": string;
+    "equipmentId": string;
+    "role": string;
+    "text": string;
+    "attachments": ai$0.Attachment[] | null;
+    "evidence": string[] | null;
+    "permission"?: CopilotPermission | null;
+    "permissionStatus"?: string;
+    "createdAt": string;
+}
+
+export interface CopilotPermission {
+    "id": string;
+    "tool": string;
+    "equipmentId": string;
+    "command": string;
+    "summary": string;
+    "risk": string;
+    "parameters": { [_ in string]?: any } | null;
+}
+
 export interface EventPage {
     "items": event$0.Event[] | null;
     "total": number;
@@ -51,6 +77,7 @@ export interface RetentionResult {
     "eventDeleted": number;
     "commandDeleted": number;
     "alarmDeleted": number;
+    "copilotDeleted": number;
     "databaseBytes": number;
 }
 

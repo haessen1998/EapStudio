@@ -35,6 +35,19 @@ export function AskCopilot(question: string, equipmentID: string, attachments: a
     return $Call.ByID(1361152184, question, equipmentID, attachments);
 }
 
+/**
+ * AskCopilotStream starts a provider-backed streaming request and returns
+ * immediately. Deltas and the final reply are emitted through
+ * studio:copilot-stream so the Wails call itself never buffers the full answer.
+ */
+export function AskCopilotStream(requestID: string, question: string, equipmentID: string, attachments: ai$0.Attachment[] | null): $CancellablePromise<void> {
+    return $Call.ByID(159554888, requestID, question, equipmentID, attachments);
+}
+
+export function ClearCopilotHistory(equipmentID: string): $CancellablePromise<void> {
+    return $Call.ByID(3117216080, equipmentID);
+}
+
 export function CompareEquipmentConfig(): $CancellablePromise<$models.EquipmentConfigComparison> {
     return $Call.ByID(3856062616);
 }
@@ -45,6 +58,10 @@ export function ConfigureAI(config: ai$0.Config, apiKey: string): $CancellablePr
 
 export function ConnectDevice(id: string): $CancellablePromise<void> {
     return $Call.ByID(3173062369, id);
+}
+
+export function CopilotHistory(equipmentID: string): $CancellablePromise<sqlite$0.CopilotMessage[] | null> {
+    return $Call.ByID(63581007, equipmentID);
 }
 
 export function DisconnectDevice(id: string): $CancellablePromise<void> {

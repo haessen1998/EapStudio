@@ -21,6 +21,7 @@ var studioFiles embed.FS
 
 func init() {
 	application.RegisterEvent[StudioSnapshot]("studio:snapshot-changed")
+	application.RegisterEvent[CopilotStreamEvent]("studio:copilot-stream")
 }
 
 // main function serves as the application's entry point. It initializes the application, creates a window,
@@ -70,6 +71,11 @@ func main() {
 	go func() {
 		for range studio.updateSignal() {
 			app.Event.Emit("studio:snapshot-changed", studio.Snapshot())
+		}
+	}()
+	go func() {
+		for value := range studio.copilotEventSignal() {
+			app.Event.Emit("studio:copilot-stream", value)
 		}
 	}()
 

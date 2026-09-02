@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"eapstudio/internal/ai"
 	"eapstudio/internal/command"
 	"eapstudio/internal/domain"
 	driver "eapstudio/internal/driver/secs"
@@ -52,6 +53,39 @@ func TestStoreSeparatesTraceAndDomainRecords(t *testing.T) {
 	commands, err := store.QueryCommands(context.Background(), HistoryQuery{Page: 1, PageSize: 25, Status: string(command.StatusPending)})
 	if err != nil || commands.Total != 1 || len(commands.Items) != 1 || commands.Items[0].Name != "send.recipe" {
 		t.Fatalf("commands = %#v, err = %v", commands, err)
+	}
+}
+
+func TestCopilotHistoryPersistsMessagesAndPermissionState(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "copilot.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	permission := &CopilotPermission{ID: "permission-1", Tool: "send.command", EquipmentID: "AOI-01", Command: "send.recipe"}
+	if err := store.RecordCopilotMessage(ctx, CopilotMessage{ID: "user-1", EquipmentID: "AOI-01", Role: "user", Text: "status", Attachments: []ai.Attachment{{Name: "manual.txt", MediaType: "text/plain", Size: 10}}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RecordCopilotMessage(ctx, CopilotMessage{ID: "assistant-1", EquipmentID: "AOI-01", Role: "assistant", Text: "selected", Evidence: []string{"runtime"}, Permission: permission, PermissionStatus: "pending"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpdateCopilotPermission(ctx, permission.ID, "allowed"); err != nil {
+		t.Fatal(err)
+	}
+	history, err := store.CopilotHistory(ctx, "AOI-01", 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(history) != 2 || history[0].Text != "status" || history[1].PermissionStatus != "allowed" || history[1].Permission == nil {
+		t.Fatalf("history = %#v", history)
+	}
+	if err := store.ClearCopilotHistory(ctx, "AOI-01"); err != nil {
+		t.Fatal(err)
+	}
+	history, err = store.CopilotHistory(ctx, "AOI-01", 20)
+	if err != nil || len(history) != 0 {
+		t.Fatalf("cleared history = %#v, err = %v", history, err)
 	}
 }
 

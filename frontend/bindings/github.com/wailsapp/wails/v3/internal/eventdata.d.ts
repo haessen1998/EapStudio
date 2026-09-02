@@ -12,6 +12,7 @@ import type * as main$0 from "../../../../../eapstudio/models.js";
 declare module "@wailsio/runtime" {
     namespace Events {
         interface CustomEvents {
+            "studio:copilot-stream": main$0.CopilotStreamEvent;
             "studio:snapshot-changed": main$0.StudioSnapshot;
         }
     }

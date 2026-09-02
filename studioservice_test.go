@@ -202,3 +202,37 @@ func TestCopilotCommandRequiresExplicitPermission(t *testing.T) {
 	}
 	t.Fatalf("approved command did not complete: %#v", snapshotDevice(t, service, "ETCHER-01").Commands)
 }
+
+func TestCopilotStreamPersistsConversation(t *testing.T) {
+	service, err := newStudioService(os.DirFS("."), t.TempDir()+"/copilot-stream.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer service.close()
+	if err := service.AskCopilotStream("request-1", "设备状态", "ETCHER-01", nil); err != nil {
+		t.Fatal(err)
+	}
+	var streamed strings.Builder
+	deadline := time.After(2 * time.Second)
+	for {
+		select {
+		case value := <-service.copilotEventSignal():
+			if value.RequestID != "request-1" {
+				continue
+			}
+			streamed.WriteString(value.Delta)
+			if value.Done {
+				if value.Reply == nil || streamed.String() != value.Reply.Answer {
+					t.Fatalf("streamed=%q reply=%#v", streamed.String(), value.Reply)
+				}
+				history, err := service.CopilotHistory("ETCHER-01")
+				if err != nil || len(history) != 2 || history[0].Role != "user" || history[1].Role != "assistant" {
+					t.Fatalf("history=%#v err=%v", history, err)
+				}
+				return
+			}
+		case <-deadline:
+			t.Fatal("timed out waiting for copilot stream")
+		}
+	}
+}

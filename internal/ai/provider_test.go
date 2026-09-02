@@ -69,3 +69,45 @@ func TestChatCompletionsAdapter(t *testing.T) {
 		t.Fatalf("answer=%q err=%v", answer, err)
 	}
 }
+
+func TestProviderAdaptersStreamSSEChunks(t *testing.T) {
+	tests := []struct {
+		provider string
+		path     string
+		events   string
+		want     string
+	}{
+		{"responses", "/responses", "data: {\"type\":\"response.output_text.delta\",\"delta\":\"equip\"}\n\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"ment\"}\n\ndata: [DONE]\n\n", "equipment"},
+		{"chat", "/chat/completions", "data: {\"choices\":[{\"delta\":{\"content\":\"S6F\"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"11\"}}]}\n\ndata: [DONE]\n\n", "S6F11"},
+	}
+	for _, test := range tests {
+		t.Run(test.provider, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				if request.URL.Path != test.path {
+					t.Fatalf("path = %q", request.URL.Path)
+				}
+				body, _ := io.ReadAll(request.Body)
+				if !strings.Contains(string(body), `"stream":true`) {
+					t.Fatalf("payload = %s", body)
+				}
+				writer.Header().Set("Content-Type", "text/event-stream")
+				_, _ = io.WriteString(writer, test.events)
+			}))
+			defer server.Close()
+			provider, err := NewProvider(Config{Provider: test.provider, BaseURL: server.URL, Model: "test"}, "key")
+			if err != nil {
+				t.Fatal(err)
+			}
+			var answer strings.Builder
+			if err := provider.Stream(context.Background(), Request{Prompt: "latest"}, func(delta string) error {
+				answer.WriteString(delta)
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if answer.String() != test.want {
+				t.Fatalf("answer = %q", answer.String())
+			}
+		})
+	}
+}

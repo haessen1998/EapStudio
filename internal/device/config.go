@@ -91,7 +91,19 @@ func LoadRuntimeConfig(source fs.FS, embeddedPath string) (Config, string, error
 	data, err := os.ReadFile(path)
 	if err == nil {
 		config, decodeErr := DecodeConfig(data)
-		return config, path, decodeErr
+		if decodeErr != nil {
+			return Config{}, path, decodeErr
+		}
+		migrated, changed, migrateErr := migratePackagedAdapters(source, embeddedPath, config)
+		if migrateErr != nil {
+			return Config{}, path, migrateErr
+		}
+		if changed {
+			if saveErr := SaveConfig(path, migrated); saveErr != nil {
+				return Config{}, path, saveErr
+			}
+		}
+		return migrated, path, nil
 	}
 	if !os.IsNotExist(err) {
 		return Config{}, path, fmt.Errorf("read runtime devices: %w", err)
@@ -104,6 +116,32 @@ func LoadRuntimeConfig(source fs.FS, embeddedPath string) (Config, string, error
 		return Config{}, path, err
 	}
 	return config, path, nil
+}
+
+// migratePackagedAdapters upgrades only the legacy generic adapter for a
+// matching packaged demo profile. User-selected custom adapters and all other
+// runtime settings remain untouched.
+func migratePackagedAdapters(source fs.FS, embeddedPath string, runtime Config) (Config, bool, error) {
+	packaged, err := LoadConfig(source, embeddedPath)
+	if err != nil {
+		return Config{}, false, err
+	}
+	byID := make(map[string]Definition, len(packaged.Devices))
+	for _, definition := range packaged.Devices {
+		byID[definition.ID] = definition
+	}
+	changed := false
+	for index := range runtime.Devices {
+		definition, exists := byID[runtime.Devices[index].ID]
+		if !exists || definition.Profile != runtime.Devices[index].Profile {
+			continue
+		}
+		if runtime.Devices[index].Adapter == "generic-gem" && definition.Adapter != "" && definition.Adapter != "generic-gem" {
+			runtime.Devices[index].Adapter = definition.Adapter
+			changed = true
+		}
+	}
+	return runtime, changed, nil
 }
 
 func SaveConfig(path string, config Config) error {

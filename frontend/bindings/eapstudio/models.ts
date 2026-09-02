@@ -34,6 +34,13 @@ export interface CopilotReply {
     "permission"?: AIActionPermission | null;
 }
 
+export interface CopilotStreamEvent {
+    "requestId": string;
+    "delta"?: string;
+    "done": boolean;
+    "reply"?: CopilotReply | null;
+}
+
 export interface EquipmentConfigComparison {
     "runtimePath": string;
     "packagedCount": number;

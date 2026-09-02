@@ -1359,6 +1359,10 @@ tbody tr:hover {
   color: #9176ed;
   background: rgba(154, 126, 255, 0.12);
 }
+.copilot-clear {
+  flex: 0 0 auto;
+  margin-left: 6px;
+}
 .copilot-body {
   display: flex;
   min-height: 0;

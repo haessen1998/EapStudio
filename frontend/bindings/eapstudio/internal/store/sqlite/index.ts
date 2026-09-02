@@ -4,6 +4,8 @@
 export type {
     Alarm,
     CommandPage,
+    CopilotMessage,
+    CopilotPermission,
     EventPage,
     HistoryQuery,
     RetentionResult,

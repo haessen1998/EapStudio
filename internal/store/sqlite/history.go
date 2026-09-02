@@ -49,6 +49,7 @@ type RetentionResult struct {
 	EventDeleted   int64 `json:"eventDeleted"`
 	CommandDeleted int64 `json:"commandDeleted"`
 	AlarmDeleted   int64 `json:"alarmDeleted"`
+	CopilotDeleted int64 `json:"copilotDeleted"`
 	DatabaseBytes  int64 `json:"databaseBytes"`
 }
 
@@ -222,6 +223,7 @@ func (s *Store) ApplyRetention(ctx context.Context, days int) (RetentionResult, 
 		{"DELETE FROM domain_events WHERE occurred_at < ?", &result.EventDeleted},
 		{"DELETE FROM commands WHERE created_at < ?", &result.CommandDeleted},
 		{"DELETE FROM alarms WHERE state = 'cleared' AND raised_at < ?", &result.AlarmDeleted},
+		{"DELETE FROM copilot_messages WHERE created_at < ?", &result.CopilotDeleted},
 	} {
 		value, execErr := tx.ExecContext(ctx, item.query, cutoff)
 		if execErr != nil {
@@ -234,7 +236,7 @@ func (s *Store) ApplyRetention(ctx context.Context, days int) (RetentionResult, 
 		return RetentionResult{}, err
 	}
 	_, _ = s.db.ExecContext(ctx, "PRAGMA wal_checkpoint(TRUNCATE)")
-	if result.TraceDeleted+result.EventDeleted+result.CommandDeleted+result.AlarmDeleted > 0 {
+	if result.TraceDeleted+result.EventDeleted+result.CommandDeleted+result.AlarmDeleted+result.CopilotDeleted > 0 {
 		if _, err := s.db.ExecContext(ctx, "VACUUM"); err != nil {
 			return RetentionResult{}, fmt.Errorf("compact history database: %w", err)
 		}

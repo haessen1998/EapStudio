@@ -182,6 +182,13 @@ CREATE TABLE IF NOT EXISTS alarms (
   PRIMARY KEY(equipment_id,alarm_id)
 );
 CREATE INDEX IF NOT EXISTS idx_alarm_state_time ON alarms(state,raised_at DESC);
+CREATE TABLE IF NOT EXISTS copilot_messages (
+  id TEXT PRIMARY KEY, session_id TEXT NOT NULL, equipment_id TEXT NOT NULL,
+  role TEXT NOT NULL, text TEXT NOT NULL, attachments_json TEXT, evidence_json TEXT,
+  permission_json TEXT, permission_id TEXT, permission_status TEXT,
+  created_at DATETIME NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_copilot_equipment_time ON copilot_messages(equipment_id,created_at DESC);
 `)
 	return err
 }

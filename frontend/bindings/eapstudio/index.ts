@@ -9,6 +9,7 @@ export {
 export type {
     AIActionPermission,
     CopilotReply,
+    CopilotStreamEvent,
     EquipmentConfigComparison,
     EquipmentConfigSaveResult,
     EquipmentMergeResult,

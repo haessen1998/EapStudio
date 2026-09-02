@@ -43,6 +43,7 @@ type StudioService struct {
 	watchCancel          context.CancelFunc
 	pending              map[string]AIActionPermission
 	permissionSequence   atomic.Uint64
+	copilotEvents        chan CopilotStreamEvent
 }
 
 type StudioSnapshot struct {
@@ -60,6 +61,13 @@ type CopilotReply struct {
 	Evidence    []string            `json:"evidence"`
 	Suggestions []string            `json:"suggestions"`
 	Permission  *AIActionPermission `json:"permission,omitempty"`
+}
+
+type CopilotStreamEvent struct {
+	RequestID string        `json:"requestId"`
+	Delta     string        `json:"delta,omitempty"`
+	Done      bool          `json:"done"`
+	Reply     *CopilotReply `json:"reply,omitempty"`
 }
 
 type AIActionPermission struct {
@@ -116,7 +124,7 @@ func newStudioServiceWithConfig(source fs.FS, databasePath string, config device
 		_ = history.Close()
 		return nil, err
 	}
-	service := &StudioService{packagedSource: source, router: routes, config: config, automation: engine, store: history, updates: make(chan struct{}, 1), aiConfig: ai.Config{Provider: "local"}, equipmentConfigPath: configPath, ruleSource: ruleSource, routeConfigPath: routePath, automationConfigPath: automationPath, pending: map[string]AIActionPermission{}}
+	service := &StudioService{packagedSource: source, router: routes, config: config, automation: engine, store: history, updates: make(chan struct{}, 1), aiConfig: ai.Config{Provider: "local"}, equipmentConfigPath: configPath, ruleSource: ruleSource, routeConfigPath: routePath, automationConfigPath: automationPath, pending: map[string]AIActionPermission{}, copilotEvents: make(chan CopilotStreamEvent, 1024)}
 	manager, err := device.NewManager(source, config, routes, engine, history, service.notify)
 	if err != nil {
 		_ = history.Close()
@@ -157,6 +165,9 @@ func (s *StudioService) start(ctx context.Context) {
 	go s.watchRules(watchCtx)
 }
 func (s *StudioService) updateSignal() <-chan struct{} { return s.updates }
+func (s *StudioService) copilotEventSignal() <-chan CopilotStreamEvent {
+	return s.copilotEvents
+}
 func (s *StudioService) notify() {
 	select {
 	case s.updates <- struct{}{}:
@@ -502,6 +513,166 @@ func (s *StudioService) AskCopilot(question string, equipmentID string, attachme
 	return CopilotReply{Answer: answer, Evidence: []string{"设备 Runtime 快照", "demo-etcher-x100 Profile", "最近消息与事件环形记录"}, Suggestions: []string{"解释最近一条 S6F11", "检查事件路由结果", "为未知 CEID 生成 Profile 草案"}}
 }
 
+// AskCopilotStream starts a provider-backed streaming request and returns
+// immediately. Deltas and the final reply are emitted through
+// studio:copilot-stream so the Wails call itself never buffers the full answer.
+func (s *StudioService) AskCopilotStream(requestID string, question string, equipmentID string, attachments []ai.Attachment) error {
+	if strings.TrimSpace(requestID) == "" {
+		return fmt.Errorf("request ID is required")
+	}
+	if strings.TrimSpace(question) == "" {
+		return fmt.Errorf("question is required")
+	}
+	if err := validateAttachments(attachments); err != nil {
+		return err
+	}
+	go s.runCopilotStream(requestID, question, equipmentID, attachments)
+	return nil
+}
+
+func (s *StudioService) runCopilotStream(requestID, question, equipmentID string, attachments []ai.Attachment) {
+	selected := s.selectedEquipment(equipmentID)
+	if selected == nil {
+		s.finishCopilotStream(requestID, equipmentID, CopilotReply{Answer: "当前没有已配置的设备。"})
+		return
+	}
+	equipmentID = selected.ID
+	storedAttachments := make([]ai.Attachment, len(attachments))
+	for index, attachment := range attachments {
+		storedAttachments[index] = ai.Attachment{Name: attachment.Name, MediaType: attachment.MediaType, Size: attachment.Size}
+	}
+	_ = s.store.RecordCopilotMessage(context.Background(), sqlitestore.CopilotMessage{
+		ID: "user-" + requestID, SessionID: "default", EquipmentID: equipmentID, Role: "user", Text: question,
+		Attachments: storedAttachments, CreatedAt: time.Now().UTC(),
+	})
+
+	config := s.AIConfig()
+	if config.Provider == "local" || commandIntent(question) {
+		reply := s.AskCopilot(question, equipmentID, attachments)
+		for _, chunk := range textChunks(reply.Answer, 12) {
+			s.copilotEvents <- CopilotStreamEvent{RequestID: requestID, Delta: chunk}
+			time.Sleep(14 * time.Millisecond)
+		}
+		s.finishCopilotStream(requestID, equipmentID, reply)
+		return
+	}
+
+	s.aiMu.RLock()
+	apiKey := s.aiAPIKey
+	s.aiMu.RUnlock()
+	if apiKey == "" {
+		apiKey = os.Getenv("EAPSTUDIO_AI_API_KEY")
+	}
+	provider, err := ai.NewProvider(config, apiKey)
+	if err != nil {
+		s.finishCopilotStream(requestID, equipmentID, CopilotReply{Answer: "AI provider 配置错误：" + err.Error()})
+		return
+	}
+	contextJSON, _ := json.Marshal(selected)
+	conversation, _ := s.store.CopilotHistory(context.Background(), equipmentID, 24)
+	conversationText := copilotConversationContext(conversation, "user-"+requestID)
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Second)
+	defer cancel()
+	var answer strings.Builder
+	err = provider.Stream(ctx, ai.Request{
+		System: "You are EapStudio Equipment Copilot. Answer using only the supplied runtime snapshot. Never claim a command was sent and never bypass UI permission approval.",
+		Prompt: conversationText + "Current user question:\n" + question + "\n\nRuntime snapshot:\n" + string(contextJSON), Attachments: attachments,
+	}, func(delta string) error {
+		answer.WriteString(delta)
+		s.copilotEvents <- CopilotStreamEvent{RequestID: requestID, Delta: delta}
+		return nil
+	})
+	if err != nil {
+		message := "AI provider 调用失败：" + err.Error()
+		if answer.Len() == 0 {
+			for _, chunk := range textChunks(message, 12) {
+				s.copilotEvents <- CopilotStreamEvent{RequestID: requestID, Delta: chunk}
+			}
+		}
+		s.finishCopilotStream(requestID, equipmentID, CopilotReply{Answer: answer.String() + message, Evidence: []string{config.Provider + " adapter"}})
+		return
+	}
+	s.finishCopilotStream(requestID, equipmentID, CopilotReply{Answer: answer.String(), Evidence: []string{config.Provider + " adapter", "设备 Runtime 快照"}})
+}
+
+func copilotConversationContext(history []sqlitestore.CopilotMessage, currentID string) string {
+	if len(history) == 0 {
+		return ""
+	}
+	start := len(history) - 12
+	if start < 0 {
+		start = 0
+	}
+	var result strings.Builder
+	result.WriteString("Previous conversation for context:\n")
+	for _, message := range history[start:] {
+		if message.ID == currentID || message.Text == "" {
+			continue
+		}
+		text := []rune(message.Text)
+		if len(text) > 1200 {
+			text = text[:1200]
+		}
+		fmt.Fprintf(&result, "%s: %s\n", message.Role, string(text))
+	}
+	result.WriteString("\n")
+	return result.String()
+}
+
+func (s *StudioService) selectedEquipment(equipmentID string) *device.Snapshot {
+	snapshot := s.Snapshot()
+	for index := range snapshot.Devices {
+		if snapshot.Devices[index].ID == equipmentID {
+			return &snapshot.Devices[index]
+		}
+	}
+	if len(snapshot.Devices) > 0 {
+		return &snapshot.Devices[0]
+	}
+	return nil
+}
+
+func (s *StudioService) finishCopilotStream(requestID, equipmentID string, reply CopilotReply) {
+	permission := toStoredPermission(reply.Permission)
+	status := ""
+	if permission != nil {
+		status = "pending"
+	}
+	_ = s.store.RecordCopilotMessage(context.Background(), sqlitestore.CopilotMessage{
+		ID: "assistant-" + requestID, SessionID: "default", EquipmentID: equipmentID, Role: "assistant", Text: reply.Answer,
+		Evidence: reply.Evidence, Permission: permission, PermissionStatus: status, CreatedAt: time.Now().UTC(),
+	})
+	s.copilotEvents <- CopilotStreamEvent{RequestID: requestID, Done: true, Reply: &reply}
+}
+
+func textChunks(value string, size int) []string {
+	characters := []rune(value)
+	var result []string
+	for start := 0; start < len(characters); start += size {
+		end := start + size
+		if end > len(characters) {
+			end = len(characters)
+		}
+		result = append(result, string(characters[start:end]))
+	}
+	return result
+}
+
+func toStoredPermission(value *AIActionPermission) *sqlitestore.CopilotPermission {
+	if value == nil {
+		return nil
+	}
+	return &sqlitestore.CopilotPermission{ID: value.ID, Tool: value.Tool, EquipmentID: value.EquipmentID, Command: value.Command, Summary: value.Summary, Risk: value.Risk, Parameters: value.Parameters}
+}
+
+func (s *StudioService) CopilotHistory(equipmentID string) ([]sqlitestore.CopilotMessage, error) {
+	return s.store.CopilotHistory(context.Background(), equipmentID, 200)
+}
+
+func (s *StudioService) ClearCopilotHistory(equipmentID string) error {
+	return s.store.ClearCopilotHistory(context.Background(), equipmentID)
+}
+
 func validateAttachments(attachments []ai.Attachment) error {
 	if len(attachments) > 4 {
 		return fmt.Errorf("最多支持 4 个附件")
@@ -559,12 +730,28 @@ func (s *StudioService) ResolveAIAction(permissionID string, allow bool) Copilot
 		return CopilotReply{Answer: "该权限请求不存在或已经处理。"}
 	}
 	if !allow {
-		return CopilotReply{Answer: fmt.Sprintf("已拒绝 %s；没有向 %s 发送任何消息。", permission.Command, permission.EquipmentID), Evidence: []string{"permission denied"}}
+		_ = s.store.UpdateCopilotPermission(context.Background(), permissionID, "denied")
+		reply := CopilotReply{Answer: fmt.Sprintf("已拒绝 %s；没有向 %s 发送任何消息。", permission.Command, permission.EquipmentID), Evidence: []string{"permission denied"}}
+		s.recordCopilotResolution(permission.EquipmentID, reply)
+		return reply
 	}
+	_ = s.store.UpdateCopilotPermission(context.Background(), permissionID, "allowed")
 	correlationID := "ai-" + permission.ID
 	value, err := s.manager.SubmitCommand(permission.EquipmentID, permission.Command, permission.Parameters, correlationID, permission.ID)
 	if err != nil {
-		return CopilotReply{Answer: "命令执行失败：" + err.Error(), Evidence: []string{"permission allowed", "command rejected before send"}}
+		reply := CopilotReply{Answer: "命令执行失败：" + err.Error(), Evidence: []string{"permission allowed", "command rejected before send"}}
+		s.recordCopilotResolution(permission.EquipmentID, reply)
+		return reply
 	}
-	return CopilotReply{Answer: fmt.Sprintf("已授权并提交 %s，commandId=%s。执行结果会以 recipe.sent 或 recipe.failed Event 返回。", value.Name, value.ID), Evidence: []string{"permission allowed", "command queue " + permission.EquipmentID}}
+	reply := CopilotReply{Answer: fmt.Sprintf("已授权并提交 %s，commandId=%s。执行结果会以 recipe.sent 或 recipe.failed Event 返回。", value.Name, value.ID), Evidence: []string{"permission allowed", "command queue " + permission.EquipmentID}}
+	s.recordCopilotResolution(permission.EquipmentID, reply)
+	return reply
+}
+
+func (s *StudioService) recordCopilotResolution(equipmentID string, reply CopilotReply) {
+	id := fmt.Sprintf("assistant-resolution-%d", time.Now().UnixNano())
+	_ = s.store.RecordCopilotMessage(context.Background(), sqlitestore.CopilotMessage{
+		ID: id, SessionID: "default", EquipmentID: equipmentID, Role: "assistant", Text: reply.Answer,
+		Evidence: reply.Evidence, CreatedAt: time.Now().UTC(),
+	})
 }
