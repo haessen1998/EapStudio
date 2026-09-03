@@ -231,6 +231,9 @@ func initializeWorkspaces(source fs.FS, configRoot string) (string, string, stri
 			return "", "", "", err
 		}
 	}
+	if err := migrateWorkspaceDevices(source, directory); err != nil {
+		return "", "", "", err
+	}
 	if err := migrateWorkspaceProfiles(directory); err != nil {
 		return "", "", "", err
 	}
@@ -238,6 +241,69 @@ func initializeWorkspaces(source fs.FS, configRoot string) (string, string, stri
 		return "", "", "", err
 	}
 	return root, active, directory, nil
+}
+
+func migrateWorkspaceDevices(source fs.FS, directory string) error {
+	path := filepath.Join(directory, "devices.yaml")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	var raw struct {
+		Devices []struct {
+			ID   string  `yaml:"id"`
+			Role *string `yaml:"role"`
+		} `yaml:"devices"`
+	}
+	if err := yaml.Unmarshal(data, &raw); err != nil {
+		return fmt.Errorf("inspect legacy devices: %w", err)
+	}
+	missingRole := map[string]bool{}
+	for _, definition := range raw.Devices {
+		missingRole[definition.ID] = definition.Role == nil
+	}
+	config, err := device.DecodeConfig(data)
+	if err != nil {
+		return err
+	}
+	config, adapterChanged, err := device.MigratePackagedAdapters(source, "configs/devices.yaml", config)
+	if err != nil {
+		return err
+	}
+	changed := adapterChanged
+	for index := range config.Devices {
+		definition := &config.Devices[index]
+		if !missingRole[definition.ID] {
+			continue
+		}
+		changed = true
+		if definition.Driver == "simulator" {
+			// Before workspaces, simulator meant an in-process fake and its HSMS
+			// address was unused. Upgrade it to a real passive Equipment Twin.
+			definition.Role = "equipment-simulator"
+			definition.Connection.Mode = "passive"
+			definition.Connection.Host = "0.0.0.0"
+		} else {
+			definition.Role = "controller"
+		}
+	}
+	if !changed {
+		return nil
+	}
+	if err := preserveLegacyFile(path, data); err != nil {
+		return err
+	}
+	return device.SaveConfig(path, config)
+}
+
+func preserveLegacyFile(path string, data []byte) error {
+	backup := path + ".legacy.bak"
+	if _, err := os.Stat(backup); err == nil {
+		return nil
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	return os.WriteFile(backup, data, 0o600)
 }
 
 func migrateWorkspaceProfiles(directory string) error {
@@ -261,7 +327,21 @@ func migrateWorkspaceProfiles(directory string) error {
 		if err != nil {
 			return err
 		}
-		return os.WriteFile(path, encoded, 0o600)
+		if err := preserveLegacyFile(path, data); err != nil {
+			return err
+		}
+		temporary := path + ".migration.tmp"
+		if err := os.WriteFile(temporary, encoded, 0o600); err != nil {
+			return err
+		}
+		if err := os.Rename(temporary, path); err != nil {
+			if writeErr := os.WriteFile(path, encoded, 0o600); writeErr != nil {
+				_ = os.Remove(temporary)
+				return writeErr
+			}
+			_ = os.Remove(temporary)
+		}
+		return nil
 	})
 }
 
@@ -277,20 +357,6 @@ func initializeWorkspaceDirectory(source fs.FS, legacyRoot, directory, name stri
 			}
 		}
 		if err := materializeRuntimeFile(seedSource, seedPath, filepath.Join(directory, item.name)); err != nil {
-			return err
-		}
-	}
-	devicePath := filepath.Join(directory, "devices.yaml")
-	runtimeDevices, err := device.LoadConfig(os.DirFS(directory), "devices.yaml")
-	if err != nil {
-		return err
-	}
-	migratedDevices, changed, err := device.MigratePackagedAdapters(source, "configs/devices.yaml", runtimeDevices)
-	if err != nil {
-		return err
-	}
-	if changed {
-		if err := device.SaveConfig(devicePath, migratedDevices); err != nil {
 			return err
 		}
 	}
@@ -520,6 +586,9 @@ func (s *StudioService) SwitchWorkspace(id string) (WorkspaceSummary, error) {
 		return WorkspaceSummary{}, fmt.Errorf("invalid workspace id")
 	}
 	directory := filepath.Join(s.workspaceRoot, id)
+	if err := migrateWorkspaceDevices(s.packagedSource, directory); err != nil {
+		return WorkspaceSummary{}, err
+	}
 	if err := migrateWorkspaceProfiles(directory); err != nil {
 		return WorkspaceSummary{}, err
 	}

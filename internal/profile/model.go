@@ -66,10 +66,13 @@ type SimulatorDefinition struct {
 }
 
 type SimulatorScenario struct {
-	DisplayName string          `yaml:"displayName" json:"displayName"`
-	Event       string          `yaml:"event" json:"event"`
-	Data        map[string]any  `yaml:"data" json:"data"`
-	Message     MessageTemplate `yaml:"message" json:"message"`
+	DisplayName string         `yaml:"displayName" json:"displayName"`
+	Event       string         `yaml:"event" json:"event"`
+	Data        map[string]any `yaml:"data" json:"data"`
+	// Direction is accepted only while decoding legacy simulator.scenarios.
+	// Compile clears it after migrating outbound entries into commands.
+	Direction string          `yaml:"direction,omitempty" json:"-"`
+	Message   MessageTemplate `yaml:"message" json:"message"`
 }
 
 type MessageTemplate struct {

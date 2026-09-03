@@ -51,3 +51,34 @@ spec:
 		t.Fatal("legacy simulator wrapper should not remain in the compiled profile")
 	}
 }
+
+func TestDecodeMigratesLegacyOutboundScenarioToCommand(t *testing.T) {
+	compiled, err := Decode([]byte(`apiVersion: eapstudio/v1alpha1
+kind: EquipmentProfile
+metadata:
+  name: legacy
+spec:
+  simulator:
+    scenarios:
+      recipe-download:
+        displayName: Download recipe
+        direction: outbound
+        message:
+          stream: 7
+          function: 3
+          wait: true
+          sml: |
+            S7F3 W
+            .
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	command, ok := compiled.Spec.Commands["download.recipe"]
+	if !ok || command.Stream != 7 || command.Function != 3 || command.SML == "" {
+		t.Fatalf("legacy outbound scenario was not migrated: %#v", compiled.Spec.Commands)
+	}
+	if _, exists := compiled.Spec.Scenarios["recipe-download"]; exists {
+		t.Fatal("legacy outbound scenario must not remain an Equipment → Host scenario")
+	}
+}

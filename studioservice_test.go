@@ -124,18 +124,21 @@ func TestWorkspaceInitializationCreationAndHotSwitch(t *testing.T) {
 
 func TestWorkspaceInitializationPreservesPartialLegacyRuntime(t *testing.T) {
 	configRoot := t.TempDir()
-	packaged, err := device.LoadConfig(os.DirFS("."), "configs/devices.yaml")
-	if err != nil {
-		t.Fatal(err)
-	}
-	legacy := packaged.Devices[0]
-	legacy.ID = "C6-340"
-	legacy.Name = "Production C6-340"
-	legacy.Driver = "go-secs"
-	legacy.Role = "controller"
-	legacy.Connection.Mode = "active"
-	legacy.Connection.Host = "192.0.2.34"
-	if err := device.SaveConfig(filepath.Join(configRoot, "devices.yaml"), device.Config{Devices: []device.Definition{legacy}}); err != nil {
+	legacyYAML := `devices:
+  - id: ETCHER-01
+    name: Legacy simulator
+    profile: profiles/demo/etcher-x100.yaml
+    driver: simulator
+    autoConnect: true
+    connection: {protocol: hsms-ss, mode: active, host: 127.0.0.1, port: 5001, sessionId: 0}
+  - id: C6-340
+    name: Production C6-340
+    profile: profiles/demo/etcher-x100.yaml
+    driver: go-secs
+    autoConnect: true
+    connection: {protocol: hsms-ss, mode: active, host: 192.0.2.34, port: 8848, sessionId: 0}
+`
+	if err := os.WriteFile(filepath.Join(configRoot, "devices.yaml"), []byte(legacyYAML), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -144,8 +147,17 @@ func TestWorkspaceInitializationPreservesPartialLegacyRuntime(t *testing.T) {
 		t.Fatal(err)
 	}
 	migrated, err := device.LoadConfig(os.DirFS(directory), "devices.yaml")
-	if err != nil || len(migrated.Devices) != 1 || migrated.Devices[0].ID != "C6-340" {
+	if err != nil || len(migrated.Devices) != 2 || migrated.Devices[1].ID != "C6-340" {
 		t.Fatalf("legacy devices were not preserved: %#v, err=%v", migrated.Devices, err)
+	}
+	if migrated.Devices[0].Role != "equipment-simulator" || migrated.Devices[0].Connection.Mode != "passive" || migrated.Devices[0].Connection.Host != "0.0.0.0" {
+		t.Fatalf("legacy simulator was not upgraded to a passive twin: %#v", migrated.Devices[0])
+	}
+	if migrated.Devices[1].Role != "controller" || migrated.Devices[1].Connection.Host != "192.0.2.34" {
+		t.Fatalf("production controller was not preserved: %#v", migrated.Devices[1])
+	}
+	if _, err := os.Stat(filepath.Join(directory, "devices.yaml.legacy.bak")); err != nil {
+		t.Fatalf("legacy devices backup: %v", err)
 	}
 	for _, path := range []string{"routes.yaml", "automations.yaml", "profiles/demo/etcher-x100.yaml"} {
 		if _, err := os.Stat(filepath.Join(directory, filepath.FromSlash(path))); err != nil {
@@ -166,6 +178,42 @@ func TestMessageCatalogCoversS1F1ThroughS17F13(t *testing.T) {
 	}
 	if !foundS2F41 || !foundS17F13 {
 		t.Fatalf("catalog missing required messages: S2F41=%v S17F13=%v", foundS2F41, foundS17F13)
+	}
+}
+
+func TestWorkspaceProfileMigrationPreservesBackupAndOutboundMessages(t *testing.T) {
+	directory := t.TempDir()
+	profileDirectory := filepath.Join(directory, "profiles")
+	if err := os.MkdirAll(profileDirectory, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(profileDirectory, "legacy.yaml")
+	legacy := `apiVersion: eapstudio/v1alpha1
+kind: EquipmentProfile
+metadata: {name: legacy}
+spec:
+  simulator:
+    scenarios:
+      recipe-download:
+        displayName: Download recipe
+        direction: outbound
+        message: {stream: 7, function: 3, wait: true, sml: "S7F3 W\n."}
+`
+	if err := os.WriteFile(path, []byte(legacy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := migrateWorkspaceProfiles(directory); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "simulator:") || !strings.Contains(string(data), "download.recipe") {
+		t.Fatalf("unexpected migrated profile:\n%s", data)
+	}
+	if _, err := os.Stat(path + ".legacy.bak"); err != nil {
+		t.Fatalf("legacy profile backup: %v", err)
 	}
 }
 

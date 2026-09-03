@@ -41,10 +41,40 @@ func Compile(document EquipmentProfile) (*CompiledProfile, error) {
 	if document.Metadata.Adapter == "" {
 		document.Metadata.Adapter = "generic-gem"
 	}
-	if len(document.Spec.Scenarios) == 0 && document.Spec.Simulator != nil && len(document.Spec.Simulator.Scenarios) > 0 {
-		document.Spec.Scenarios = document.Spec.Simulator.Scenarios
+	if document.Spec.Scenarios == nil {
+		document.Spec.Scenarios = map[string]SimulatorScenario{}
+	}
+	if document.Spec.Commands == nil {
+		document.Spec.Commands = map[string]CommandDefinition{}
+	}
+	if document.Spec.Simulator != nil {
+		for name, scenario := range document.Spec.Simulator.Scenarios {
+			if strings.EqualFold(scenario.Direction, "outbound") {
+				commandName := legacyScenarioCommandName(name)
+				if _, exists := document.Spec.Commands[commandName]; !exists {
+					document.Spec.Commands[commandName] = CommandDefinition{
+						DisplayName:  scenario.DisplayName,
+						Stream:       scenario.Message.Stream,
+						Function:     scenario.Message.Function,
+						Wait:         scenario.Message.Wait,
+						SML:          scenario.Message.SML,
+						SuccessEvent: "message.accepted",
+						FailureEvent: "message.failed",
+					}
+				}
+				continue
+			}
+			scenario.Direction = ""
+			if _, exists := document.Spec.Scenarios[name]; !exists {
+				document.Spec.Scenarios[name] = scenario
+			}
+		}
 	}
 	document.Spec.Simulator = nil
+	for name, scenario := range document.Spec.Scenarios {
+		scenario.Direction = ""
+		document.Spec.Scenarios[name] = scenario
+	}
 
 	compiled := &CompiledProfile{
 		EquipmentProfile:  document,
@@ -105,4 +135,17 @@ func Compile(document EquipmentProfile) (*CompiledProfile, error) {
 		}
 	}
 	return compiled, nil
+}
+
+func legacyScenarioCommandName(name string) string {
+	parts := strings.FieldsFunc(strings.ToLower(strings.TrimSpace(name)), func(value rune) bool {
+		return value == '-' || value == '_' || value == '.' || value == ' '
+	})
+	if len(parts) >= 2 {
+		return parts[len(parts)-1] + "." + strings.Join(parts[:len(parts)-1], "-")
+	}
+	if len(parts) == 1 {
+		return "send." + parts[0]
+	}
+	return "send.message"
 }
