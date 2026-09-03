@@ -927,6 +927,31 @@ function DeviceDetail({
   onConnect: () => void;
   onDisconnect: () => void;
 }) {
+  const isTwin = device.role === "equipment-simulator";
+  const runtimeStarted =
+    device.state === "connecting" || device.state === "selected";
+  const stateLabel = isTwin
+    ? device.state === "disconnected"
+      ? "stopped"
+      : device.state === "connecting"
+        ? "listening"
+        : device.state === "selected"
+          ? "host connected"
+          : "error"
+    : device.state;
+  const stateHint = isTwin
+    ? device.state === "disconnected"
+      ? "Equipment Twin endpoint is stopped; its HSMS port is not listening."
+      : device.state === "connecting"
+        ? "Equipment Twin endpoint is listening and waiting for a Host to complete HSMS Select."
+        : device.state === "selected"
+          ? "A Host is connected and the Equipment Twin HSMS session is selected."
+          : "Equipment Twin endpoint could not start or lost its listener."
+    : device.state === "connecting"
+      ? "Controller is connecting to the equipment or waiting for HSMS Select."
+      : device.state === "selected"
+        ? "Controller and equipment have completed HSMS Select."
+        : "Controller is not connected to the equipment.";
   return (
     <div className="page-stack">
       <div className="detail-header">
@@ -939,23 +964,24 @@ function DeviceDetail({
             <Badge
               variant={device.state === "selected" ? "success" : "outline"}
             >
-              {device.state}
+              {stateLabel}
             </Badge>
           </div>
           <p>
             {device.id} · {device.vendor} {device.model}
           </p>
+          <p className="runtime-state-hint">{stateHint}</p>
         </div>
         <div className="ml-auto flex gap-2">
-          {device.state === "selected" ? (
+          {runtimeStarted ? (
             <Button variant="outline" onClick={onDisconnect}>
               <Unplug className="size-4" />
-              Disconnect
+              {isTwin ? "Stop endpoint" : "Disconnect"}
             </Button>
           ) : (
             <Button onClick={onConnect}>
               <PlugZap className="size-4" />
-              Connect
+              {isTwin ? "Start endpoint" : "Connect"}
             </Button>
           )}
         </div>

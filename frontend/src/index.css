@@ -653,6 +653,10 @@ tbody tr:hover {
   color: var(--muted-foreground);
   font-size: 10px;
 }
+.detail-header .runtime-state-hint {
+  margin-top: 5px;
+  color: color-mix(in srgb, var(--foreground) 70%, var(--muted-foreground));
+}
 .detail-summary-grid {
   margin-top: 15px;
 }
@@ -2056,7 +2060,7 @@ tbody tr:hover {
   word-break: break-word;
 }
 .diagnostics-card {
-  margin-top: 2px;
+  margin-top: 16px;
 }
 .diagnostics-grid {
   display: grid;
